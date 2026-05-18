@@ -59,9 +59,15 @@ For production, point this at your deployed Fly.io backend.
 
 ## Deployment
 
-- **Backend** — Fly.io free tier. `fly launch` inside `backend/`, then `fly deploy`.
-- **Frontend** — Cloudflare Pages or any static host. Build command
-  `npm run build`, output `dist/`.
+Full walkthrough — including Cloudflare Pages settings and a comparison of Render / Railway / Fly.io for the backend — lives in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+One-click backend deploys:
+
+- **Render** — [`render.yaml`](render.yaml) at the repo root; click [Deploy to Render](https://render.com/deploy?repo=https://github.com/minhajulofficial/pixelboost-upscaler).
+- **Railway** — [`backend/railway.toml`](backend/railway.toml); set the service's root directory to `backend` in the Railway UI.
+- **Fly.io** — [`backend/fly.toml`](backend/fly.toml); `cd backend && fly launch --no-deploy --copy-config && fly deploy`.
+
+The frontend is a static Vite bundle (`npm run build` → `dist/`) and goes on Cloudflare Pages, Vercel, Netlify, etc. Make sure to set `VITE_API_URL` to your deployed backend URL **before** building.
 
 ## License
 

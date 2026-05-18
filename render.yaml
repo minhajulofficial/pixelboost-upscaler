@@ -1,0 +1,12 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec)
+# One-click deploy: https://render.com/deploy?repo=https://github.com/minhajulofficial/pixelboost-upscaler
+services:
+  - type: web
+    name: pixelboost-backend
+    runtime: docker
+    plan: free
+    region: oregon
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
