@@ -25,11 +25,13 @@ import "./App.css";
 
 type Scale = 2 | 4 | 6;
 type Format = "jpg" | "png";
+type Mode = "fast" | "ai";
 
 interface Settings {
   scale: Scale;
   format: Format;
   quality: number;
+  mode: Mode;
 }
 
 interface Dimensions {
@@ -192,6 +194,7 @@ function upscaleRequest(
     form.append("scale", String(settings.scale));
     form.append("format", settings.format);
     form.append("quality", String(settings.quality));
+    form.append("mode", settings.mode);
     xhr.send(form);
   });
 }
@@ -318,6 +321,7 @@ export default function App() {
     scale: 2,
     format: "jpg",
     quality: 90,
+    mode: "fast",
   });
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -659,6 +663,50 @@ export default function App() {
                   {settings.quality}
                 </span>
               </div>
+            )}
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-start gap-3 border-t border-gray-800 pt-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                Engine
+              </span>
+              <div className="flex rounded-full bg-gray-800 p-1">
+                <button
+                  type="button"
+                  onClick={() => setSettings((prev) => ({ ...prev, mode: "fast" }))}
+                  className={`min-h-[36px] rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
+                    settings.mode === "fast"
+                      ? "bg-purple-600 text-white shadow-md shadow-purple-900/40"
+                      : "text-gray-300 hover:text-white"
+                  }`}
+                  aria-pressed={settings.mode === "fast"}
+                  title="Pillow LANCZOS — instant, classical resize with mild sharpening"
+                >
+                  Fast
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettings((prev) => ({ ...prev, mode: "ai" }))}
+                  className={`min-h-[36px] inline-flex items-center gap-1 rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
+                    settings.mode === "ai"
+                      ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-md shadow-fuchsia-900/40"
+                      : "text-gray-300 hover:text-white"
+                  }`}
+                  aria-pressed={settings.mode === "ai"}
+                  title="Real-ESRGAN on HuggingFace Spaces — slower (20–90s) but real detail recovery"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  AI Enhance
+                </button>
+              </div>
+            </div>
+            {settings.mode === "ai" && (
+              <p className="flex-1 min-w-[220px] text-xs text-fuchsia-200/80">
+                AI mode runs Real-ESRGAN on a free HuggingFace Space.
+                Expect 20–90 seconds per image and a possible ~30s cold start
+                if the Space is asleep.
+              </p>
             )}
           </div>
         </section>
