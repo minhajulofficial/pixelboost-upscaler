@@ -1,14 +1,17 @@
 # PixelBoost
 
 > Free unlimited image upscaler. Upload JPG/PNG, pick a 2×/4×/6× scale, and get
-> a crisp upscaled copy back — all heavy lifting runs on the server so your
-> phone never breaks a sweat.
+> a crisp upscaled copy back. Two engines: instant **Fast** (Pillow LANCZOS) and
+> real-detail **AI Enhance** (Real-ESRGAN on a HuggingFace Space).
 
 ## Features
 
-- **2×, 4×, 6× upscaling** powered by Pillow's LANCZOS resampler.
-- **Subtle finishing pass**: unsharp mask + a touch of contrast and saturation
-  for a clean, modern look.
+- **Two engines, one toggle:**
+  - **Fast** — Pillow LANCZOS + mild unsharp/contrast/saturation finishing
+    pass. Runs in milliseconds, no AI, can't invent missing detail.
+  - **AI Enhance** — Real-ESRGAN (`realesr-general-x4v3`) inference offloaded
+    to a free HuggingFace Space. 20–90 s per image, recovers real texture.
+- **2×, 4×, 6× scales** in either engine.
 - **Bulk upload + ZIP download** via JSZip.
 - **Unlimited usage** — no sign-up, no watermark, no daily limit.
 - **Server-side processing** — the browser doesn't transcode pixels, so even
@@ -20,7 +23,8 @@
 ```
 .
 ├── backend/    FastAPI + Pillow image-processing API (Poetry)
-└── frontend/   React + Vite + Tailwind upscaler UI
+├── frontend/   React + Vite + Tailwind upscaler UI
+└── hf-space/   Gradio + Real-ESRGAN HuggingFace Space (AI mode worker)
 ```
 
 ## Quick start
@@ -35,11 +39,14 @@ poetry run fastapi dev app/main.py     # http://localhost:8000
 
 Endpoints:
 
-| Method | Path             |
-| ------ | ---------------- |
-| GET    | `/healthz`       |
-| POST   | `/upscale`       |
-| POST   | `/upscale-bulk`  |
+| Method | Path             | Notes                                  |
+| ------ | ---------------- | -------------------------------------- |
+| GET    | `/healthz`       | reports `ai_available`                 |
+| POST   | `/upscale`       | form: `file`, `scale`, `format`, `quality`, `mode` (`fast`/`ai`) |
+| POST   | `/upscale-bulk`  | same fields, returns ZIP archive       |
+
+For AI mode, set `PIXELBOOST_HF_SPACE` (e.g. `minhajulofficial/pixelboost-upscaler`)
+on the backend. Without it, `mode=ai` requests return HTTP 503.
 
 ### Frontend (Node 20+)
 
@@ -55,7 +62,28 @@ Set the backend URL in `frontend/.env`:
 VITE_API_URL=http://localhost:8000
 ```
 
-For production, point this at your deployed Fly.io backend.
+For production, point this at your deployed Render/Fly.io backend.
+
+### AI Enhance worker (HuggingFace Space)
+
+The `hf-space/` directory is the source of truth for the Gradio app that runs
+Real-ESRGAN. To deploy/update:
+
+```bash
+cd hf-space
+pip install -r requirements.txt
+python app.py        # local sanity check (downloads model on first run)
+```
+
+Push to HuggingFace via `huggingface_hub`:
+
+```bash
+huggingface-cli login   # paste a write token
+huggingface-cli upload-large-folder minhajulofficial/pixelboost-upscaler . --repo-type=space
+```
+
+Then set `PIXELBOOST_HF_SPACE=minhajulofficial/pixelboost-upscaler` on the
+backend host (Render, Fly, …).
 
 ## Deployment
 

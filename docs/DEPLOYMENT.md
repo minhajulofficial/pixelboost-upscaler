@@ -98,3 +98,62 @@ VITE_API_URL=https://<your-backend-url> npm run build
 ## 3. CORS
 
 `backend/app/main.py` enables `Access-Control-Allow-Origin: *` for every header and method, so the frontend can sit on any domain. If you ever tighten that, keep `Authorization` in the allowed headers — `App.tsx` may send it when `VITE_API_URL` embeds basic-auth credentials (e.g. behind a private reverse proxy).
+
+---
+
+## 4. AI Enhance worker (HuggingFace Space)
+
+The **AI Enhance** mode runs Real-ESRGAN on a free HuggingFace Space. The
+backend calls the Space's `/upscale` API via `gradio_client` and re-encodes
+the result so the response shape matches Fast mode.
+
+### Deploy the Space
+
+The Gradio app lives in `hf-space/`. Push it to HuggingFace with:
+
+```bash
+pip install -U huggingface_hub
+huggingface-cli login        # paste a write token
+huggingface-cli repo create --type=space --space_sdk=gradio pixelboost-upscaler
+cd hf-space
+huggingface-cli upload minhajulofficial/pixelboost-upscaler . --repo-type=space
+```
+
+Or do everything with the Python API in one go:
+
+```python
+from huggingface_hub import HfApi
+api = HfApi(token="hf_…")
+api.create_repo("minhajulofficial/pixelboost-upscaler",
+                repo_type="space", space_sdk="gradio", exist_ok=True)
+api.upload_folder(folder_path="hf-space",
+                  repo_id="minhajulofficial/pixelboost-upscaler",
+                  repo_type="space")
+```
+
+First build takes ~5–10 minutes (PyTorch + basicsr download). Subsequent
+deploys are fast. The Space auto-downloads `realesr-general-x4v3.pth`
+from the official Real-ESRGAN GitHub release on first inference.
+
+### Wire the backend to the Space
+
+Set this env var on the backend host (Render → Service → Environment, Fly →
+`fly secrets set`):
+
+```
+PIXELBOOST_HF_SPACE = minhajulofficial/pixelboost-upscaler
+```
+
+Optionally also `HF_TOKEN` if the Space is private (public Spaces don't
+require it for inference calls).
+
+The `/healthz` endpoint will report `ai_available: true` once configured.
+
+### Free-tier expectations
+
+- HuggingFace free CPU tier: ~16 GB RAM, 2 vCPU.
+- Inference time: 20–90 s for a 1–2 MP image.
+- Spaces sleep after 48 h of inactivity; first wake-up adds ~30 s.
+- Concurrent requests are queued (one at a time on free CPU).
+- AI mode caps input at ~4 MP to avoid timeouts; suggest Fast mode for
+  larger inputs.
