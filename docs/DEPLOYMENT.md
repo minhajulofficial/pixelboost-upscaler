@@ -157,3 +157,40 @@ The `/healthz` endpoint will report `ai_available: true` once configured.
 - Concurrent requests are queued (one at a time on free CPU).
 - AI mode caps input at ~4 MP to avoid timeouts; suggest Fast mode for
   larger inputs.
+
+### Keep-alive (recommended)
+
+Render's free Web Services sleep after ~15 minutes of inactivity. Cold
+wake-ups add ~30 s of latency to the first request after a sleep, which
+on AI mode is enough to push past timeouts. Add an external uptime ping
+to keep the service warm during your active hours:
+
+- **UptimeRobot** (free) — create a Keyword monitor pointed at
+  `https://<your-backend>.onrender.com/healthz` with keyword `"ok"`,
+  5-minute interval.
+- **cron-job.org** (free) — same URL, 5- or 10-minute schedule.
+- **GitHub Actions** — schedule a workflow with a `curl` step every
+  10 minutes (note: Actions cron has 5–15 min jitter and pauses on
+  inactive repos for 60+ days).
+
+Hitting `/healthz` is sufficient — it's a cheap JSON response and
+doesn't kick off any image processing.
+
+### Async AI jobs
+
+AI mode supports an asynchronous endpoint pair to bypass the
+Cloudflare/Render ~100 s per-request edge timeout (which used to drop
+slow AI requests partway through):
+
+| Method | Path                  | Notes                                                                             |
+| ------ | --------------------- | --------------------------------------------------------------------------------- |
+| POST   | `/jobs/upscale-ai`    | Multipart `file/scale/format/quality`. Returns `202` + `{"id": "...", "status": "queued"}`. |
+| GET    | `/jobs/{id}`          | Poll for `queued`/`running`/`done`/`error` + `progress`.                          |
+| GET    | `/jobs/{id}/result`   | Once status is `done`, fetch the image bytes.                                     |
+
+Jobs are kept in memory for 10 minutes after completion (override with
+`PIXELBOOST_JOB_TTL` in seconds). The server caps concurrent active jobs
+at 32 (override with `PIXELBOOST_MAX_ACTIVE_JOBS`); over-cap submissions
+get `429`. The frontend uses this flow automatically for AI mode; the
+sync `/upscale` endpoint is still wired for `mode=fast` and remains
+available for `mode=ai` if a client wants single-request semantics.

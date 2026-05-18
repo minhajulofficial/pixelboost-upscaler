@@ -80,16 +80,19 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
 const SCALE_OPTIONS: Scale[] = [2, 4, 6];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
-// Per-mode XHR timeouts. Fast mode should finish well under 30s; AI mode is
-// bounded by the Cloudflare/Render ~100s edge timeout, plus the HF Space's
-// 20–90s inference, so we go a bit beyond that to give the inflight request
-// a fair chance before the retry layer kicks in.
+// Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
+// short *submit* request followed by polling — see submitAiJob / pollAiJob.
 const REQUEST_TIMEOUT_MS: Record<Mode, number> = {
   fast: 45_000,
-  ai: 130_000,
+  ai: 45_000,
 };
 const MAX_RETRIES = 2;
 const RETRY_BACKOFF_MS = [4_000, 12_000];
+
+// AI async-job polling parameters.
+const AI_POLL_INTERVAL_MS = 3_000;
+const AI_POLL_MAX_LIFETIME_MS = 10 * 60_000; // 10 min wall-clock per job
+const AI_POLL_MAX_CONSECUTIVE_FAILURES = 6;
 
 // Errors that should *not* be retried (user-actionable / deterministic).
 class NonRetryableError extends Error {
@@ -97,6 +100,16 @@ class NonRetryableError extends Error {
     super(message);
     this.name = "NonRetryableError";
   }
+}
+
+interface JobStatusPayload {
+  id: string;
+  status: "queued" | "running" | "done" | "error";
+  progress: number;
+  error?: string;
+  result_url?: string;
+  result_filename?: string;
+  queue_position?: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -147,7 +160,7 @@ interface UpscaleApiResult {
   blob: Blob;
 }
 
-function upscaleRequest(
+function upscaleSyncRequest(
   file: File,
   settings: Settings,
   onProgress: (pct: number) => void,
@@ -239,6 +252,164 @@ function upscaleRequest(
     form.append("mode", settings.mode);
     xhr.send(form);
   });
+}
+
+// AI mode async-job flow. We POST once to /jobs/upscale-ai (returns 202 +
+// job_id), then poll /jobs/{id} every few seconds until status is "done"
+// or "error", then fetch the result blob. This sidesteps the ~100s
+// Cloudflare/Render edge timeout that was dropping slow AI requests.
+function submitAiJob(
+  file: File,
+  settings: Settings,
+  onUploadProgress: (pct: number) => void,
+  signal: AbortSignal,
+): Promise<JobStatusPayload> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/jobs/upscale-ai`, true);
+    xhr.timeout = REQUEST_TIMEOUT_MS.ai;
+    if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const fraction = event.loaded / event.total;
+        // Reserve 0–0.2 of the total progress bar for the upload itself; the
+        // rest is filled in by poll updates.
+        onUploadProgress(Math.min(0.2, fraction * 0.2));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status === 202) {
+        try {
+          const data = JSON.parse(xhr.responseText) as JobStatusPayload;
+          resolve(data);
+        } catch {
+          reject(new Error("Could not parse job-submit response."));
+        }
+        return;
+      }
+      let detail = `HTTP ${xhr.status}`;
+      try {
+        const parsed = JSON.parse(xhr.responseText) as { detail?: string };
+        if (parsed.detail) detail = parsed.detail;
+      } catch {
+        // ignore
+      }
+      if (xhr.status >= 400 && xhr.status < 500) {
+        reject(new NonRetryableError(detail));
+      } else {
+        reject(new Error(detail));
+      }
+    };
+    xhr.onerror = () =>
+      reject(new Error("Connection dropped while submitting AI job."));
+    xhr.ontimeout = () =>
+      reject(new Error("Submitting AI job timed out. The backend may be cold-starting."));
+    xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+
+    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+
+    const form = new FormData();
+    form.append("file", file);
+    form.append("scale", String(settings.scale));
+    form.append("format", settings.format);
+    form.append("quality", String(settings.quality));
+    xhr.send(form);
+  });
+}
+
+async function pollAiJob(
+  jobId: string,
+  onProgress: (pct: number) => void,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const startedAt = Date.now();
+  let consecutiveFailures = 0;
+  let lastReportedFraction = 0.2;
+
+  while (true) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    if (Date.now() - startedAt > AI_POLL_MAX_LIFETIME_MS) {
+      throw new Error("AI job is taking longer than 10 minutes — giving up.");
+    }
+
+    let payload: JobStatusPayload | null = null;
+    try {
+      const headers: HeadersInit = {};
+      if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+      const res = await fetch(`${API_URL}/jobs/${jobId}`, { signal, headers });
+      if (res.status === 404) {
+        throw new NonRetryableError(
+          "Job not found on the server — it may have expired. Please re-submit.",
+        );
+      }
+      if (!res.ok) {
+        throw new Error(`Job poll failed: HTTP ${res.status}`);
+      }
+      payload = (await res.json()) as JobStatusPayload;
+      consecutiveFailures = 0;
+    } catch (err) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (err instanceof NonRetryableError) throw err;
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= AI_POLL_MAX_CONSECUTIVE_FAILURES) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Lost connection to server while polling: ${message}`);
+      }
+      await sleep(AI_POLL_INTERVAL_MS, signal);
+      continue;
+    }
+
+    if (payload.status === "done") {
+      onProgress(0.95);
+      const headers: HeadersInit = {};
+      if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+      const resultRes = await fetch(`${API_URL}/jobs/${jobId}/result`, { signal, headers });
+      if (!resultRes.ok) {
+        throw new Error(`Could not fetch AI result: HTTP ${resultRes.status}`);
+      }
+      onProgress(1);
+      return await resultRes.blob();
+    }
+    if (payload.status === "error") {
+      throw new NonRetryableError(payload.error ?? "AI upscale failed on the server.");
+    }
+
+    // queued or running
+    const baseFraction = payload.status === "queued" ? 0.2 : 0.4;
+    const serverProgress = Number.isFinite(payload.progress) ? payload.progress : 0;
+    const reported = Math.max(
+      lastReportedFraction,
+      Math.min(0.94, baseFraction + serverProgress * 0.5),
+    );
+    lastReportedFraction = reported;
+    onProgress(reported);
+    await sleep(AI_POLL_INTERVAL_MS, signal);
+  }
+}
+
+async function upscaleAiAsync(
+  file: File,
+  settings: Settings,
+  onProgress: (pct: number) => void,
+  signal: AbortSignal,
+): Promise<UpscaleApiResult> {
+  const job = await submitAiJob(file, settings, onProgress, signal);
+  const blob = await pollAiJob(job.id, onProgress, signal);
+  return { blob };
+}
+
+function upscaleRequest(
+  file: File,
+  settings: Settings,
+  onProgress: (pct: number) => void,
+  signal: AbortSignal,
+): Promise<UpscaleApiResult> {
+  if (settings.mode === "ai") {
+    return upscaleAiAsync(file, settings, onProgress, signal);
+  }
+  return upscaleSyncRequest(file, settings, onProgress, signal);
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

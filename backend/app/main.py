@@ -17,17 +17,26 @@ Two modes are supported:
 
 The ``/upscale-bulk`` endpoint loops over files using the same mode and
 returns a ZIP archive.
+
+AI mode also exposes an asynchronous job API (``POST /jobs/upscale-ai``,
+``GET /jobs/{id}``, ``GET /jobs/{id}/result``) which lets the client poll
+for a result instead of holding open a single long HTTP request. This
+bypasses the ~100s Cloudflare/Render edge timeout that otherwise drops
+slow AI requests partway through.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import tempfile
 import threading
 import time
+import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -39,10 +48,24 @@ from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
 logger = logging.getLogger("pixelboost")
 logging.basicConfig(level=logging.INFO)
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Start the AI job worker on app startup so /jobs/upscale-ai submissions
+    # can be drained in the background while HTTP requests continue to be
+    # served. Stop it on shutdown.
+    await _start_jobs_worker()
+    try:
+        yield
+    finally:
+        await _stop_jobs_worker()
+
+
 app = FastAPI(
     title="PixelBoost API",
     description="Free unlimited image upscaler.",
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 # CORS — keep wide open so the static frontend (Cloudflare Pages, Vercel, etc.)
@@ -80,6 +103,17 @@ _hf_client_lock = threading.Lock()
 # which then makes subsequent .predict() calls fail with cryptic errors.
 HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "300"))
 
+# Async-job-queue state for AI mode. The worker is a single asyncio task
+# that pulls job ids off the queue and runs ``gradio_client.predict`` in a
+# background thread (so the HTTP event loop stays responsive to /jobs/{id}
+# polls). HF Space concurrency is 1 anyway, so a single worker matches the
+# upstream capacity.
+MAX_ACTIVE_JOBS = int(os.environ.get("PIXELBOOST_MAX_ACTIVE_JOBS", "32"))
+JOB_TTL_SECONDS = float(os.environ.get("PIXELBOOST_JOB_TTL", "600"))
+MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(20 * 1024 * 1024)))
+
+JobStatus = Literal["queued", "running", "done", "error"]
+
 
 Scale = Literal[2, 4, 6]
 Format = Literal["jpg", "jpeg", "png"]
@@ -93,6 +127,38 @@ class UpscaleResult:
     filename: str
     content_type: str
     data: bytes
+
+
+@dataclass
+class AiJob:
+    """Server-side state for one async AI upscale request.
+
+    The ``file_bytes`` field is cleared once the worker has finished with the
+    input so completed/errored jobs don't keep multi-MB blobs alive past
+    their useful life.
+    """
+
+    id: str
+    status: JobStatus
+    progress: float
+    filename: str
+    scale: int
+    fmt: str
+    quality: int
+    created_at: float
+    file_bytes: bytes = b""
+    started_at: float | None = None
+    finished_at: float | None = None
+    result_filename: str | None = None
+    result_content_type: str | None = None
+    result_data: bytes | None = None
+    error: str | None = None
+
+
+_jobs: dict[str, AiJob] = {}
+_jobs_lock = threading.Lock()
+_jobs_queue: asyncio.Queue[str] | None = None
+_jobs_worker_task: asyncio.Task[None] | None = None
 
 
 def _normalize_format(fmt: str) -> str:
@@ -328,9 +394,129 @@ def _upscale_image(
     )
 
 
+# ---------------------------------------------------------------------------
+# Async-job machinery for AI mode
+# ---------------------------------------------------------------------------
+
+
+async def _start_jobs_worker() -> None:
+    global _jobs_queue, _jobs_worker_task
+    _jobs_queue = asyncio.Queue()
+    _jobs_worker_task = asyncio.create_task(_jobs_worker_loop(), name="pixelboost-ai-worker")
+
+
+async def _stop_jobs_worker() -> None:
+    global _jobs_worker_task
+    if _jobs_worker_task is None:
+        return
+    _jobs_worker_task.cancel()
+    try:
+        await _jobs_worker_task
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
+    _jobs_worker_task = None
+
+
+async def _jobs_worker_loop() -> None:
+    assert _jobs_queue is not None
+    while True:
+        job_id = await _jobs_queue.get()
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None or job.status != "queued":
+                continue
+            job.status = "running"
+            job.started_at = time.monotonic()
+            job.progress = 0.1
+        try:
+            # ``gradio_client.predict`` is blocking; offload to a thread so the
+            # event loop continues to service /jobs/{id} polls and /healthz.
+            result = await asyncio.to_thread(
+                _upscale_image,
+                job.file_bytes,
+                job.filename,
+                job.scale,
+                job.fmt,
+                job.quality,
+                "ai",
+            )
+            with _jobs_lock:
+                job.status = "done"
+                job.progress = 1.0
+                job.finished_at = time.monotonic()
+                job.result_filename = result.filename
+                job.result_content_type = result.content_type
+                job.result_data = result.data
+                job.file_bytes = b""  # free RAM
+        except HTTPException as exc:
+            with _jobs_lock:
+                job.status = "error"
+                job.error = str(exc.detail)
+                job.finished_at = time.monotonic()
+                job.file_bytes = b""
+        except asyncio.CancelledError:
+            with _jobs_lock:
+                if job.status == "running":
+                    job.status = "error"
+                    job.error = "Worker cancelled"
+                    job.finished_at = time.monotonic()
+                    job.file_bytes = b""
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("AI job %s failed", job_id)
+            with _jobs_lock:
+                job.status = "error"
+                job.error = str(exc) or "Unknown error"
+                job.finished_at = time.monotonic()
+                job.file_bytes = b""
+
+
+def _gc_jobs() -> None:
+    """Drop completed/errored jobs older than ``JOB_TTL_SECONDS``.
+
+    Called opportunistically on each /jobs/{id} read so we don't need a
+    separate timer task. Active (queued/running) jobs are never collected.
+    """
+    now = time.monotonic()
+    with _jobs_lock:
+        for jid in list(_jobs.keys()):
+            j = _jobs[jid]
+            if j.finished_at is not None and (now - j.finished_at) > JOB_TTL_SECONDS:
+                del _jobs[jid]
+
+
+def _count_active_jobs_locked() -> int:
+    return sum(1 for j in _jobs.values() if j.status in ("queued", "running"))
+
+
+def _serialize_job(job: AiJob) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": job.id,
+        "status": job.status,
+        "progress": round(job.progress, 4),
+        "scale": job.scale,
+        "format": job.fmt,
+        "filename": job.filename,
+    }
+    if job.error is not None:
+        payload["error"] = job.error
+    if job.status == "done":
+        payload["result_url"] = f"/jobs/{job.id}/result"
+        if job.result_filename:
+            payload["result_filename"] = job.result_filename
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoints
+# ---------------------------------------------------------------------------
+
+
 @app.get("/healthz")
-def healthz() -> dict[str, str | bool]:
-    return {"status": "ok", "ai_available": bool(HF_SPACE)}
+def healthz() -> dict[str, str | bool | int]:
+    with _jobs_lock:
+        active = _count_active_jobs_locked()
+    return {"status": "ok", "ai_available": bool(HF_SPACE), "ai_jobs_active": active}
 
 
 @app.get("/")
@@ -338,7 +524,14 @@ def root() -> JSONResponse:
     return JSONResponse(
         {
             "name": "PixelBoost API",
-            "endpoints": ["/healthz", "/upscale", "/upscale-bulk"],
+            "endpoints": [
+                "/healthz",
+                "/upscale",
+                "/upscale-bulk",
+                "/jobs/upscale-ai",
+                "/jobs/{id}",
+                "/jobs/{id}/result",
+            ],
             "modes": sorted(ALLOWED_MODES),
             "ai_available": bool(HF_SPACE),
         }
@@ -433,5 +626,120 @@ async def upscale_bulk(
             "X-PixelBoost-Succeeded": str(successes),
             "X-PixelBoost-Failed": str(len(errors)),
             "X-PixelBoost-Mode": mode,
+        },
+    )
+
+
+@app.post("/jobs/upscale-ai", status_code=202)
+async def submit_ai_job(
+    file: UploadFile = File(...),
+    scale: int = Form(2),
+    format: str = Form("jpg"),
+    quality: int = Form(90),
+) -> JSONResponse:
+    """Submit an AI upscale request and return immediately with a ``job_id``.
+
+    Clients should poll ``GET /jobs/{job_id}`` until ``status`` is ``done`` or
+    ``error``, then fetch the bytes from ``GET /jobs/{job_id}/result``. This
+    decouples long-running inference from the HTTP request lifecycle, so the
+    ~100s Cloudflare/Render edge timeout no longer terminates slow AI jobs.
+    """
+    if _jobs_queue is None:
+        raise HTTPException(status_code=503, detail="Job worker not started yet. Try again in a moment.")
+
+    scale = _validate_scale(scale)
+    fmt = _normalize_format(format)
+    quality = _validate_quality(quality)
+    # AI mode requires HF Space; reuse _validate_mode for the 503 path.
+    _validate_mode("ai")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if len(raw) > MAX_JOB_INPUT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Image too large for async AI mode ({len(raw) // 1_000_000} MB > "
+                f"{MAX_JOB_INPUT_BYTES // 1_000_000} MB cap)."
+            ),
+        )
+
+    # Validate input dimensions / decode early so the client gets a fast,
+    # actionable 400 instead of a queued job that immediately errors.
+    probe = _open_image(raw, file.filename or "image")
+    _enforce_output_cap(probe, scale)
+    if probe.width * probe.height > AI_MAX_INPUT_PIXELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Input too large for AI mode ({probe.width}×{probe.height} "
+                f"≈ {(probe.width * probe.height) // 1_000_000} MP; cap "
+                f"{AI_MAX_INPUT_PIXELS // 1_000_000} MP). Use fast mode for large sources."
+            ),
+        )
+
+    with _jobs_lock:
+        if _count_active_jobs_locked() >= MAX_ACTIVE_JOBS:
+            raise HTTPException(
+                status_code=429,
+                detail="Server is busy with AI upscales right now. Please retry shortly.",
+            )
+        job_id = uuid.uuid4().hex
+        job = AiJob(
+            id=job_id,
+            status="queued",
+            progress=0.0,
+            filename=file.filename or "image",
+            scale=scale,
+            fmt=fmt,
+            quality=quality,
+            created_at=time.monotonic(),
+            file_bytes=raw,
+        )
+        _jobs[job_id] = job
+    _jobs_queue.put_nowait(job_id)
+
+    with _jobs_lock:
+        queue_position = sum(
+            1 for j in _jobs.values() if j.status == "queued" and j.created_at <= job.created_at
+        )
+
+    payload = _serialize_job(job)
+    payload["queue_position"] = queue_position
+    return JSONResponse(payload, status_code=202)
+
+
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str) -> JSONResponse:
+    _gc_jobs()
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    return JSONResponse(_serialize_job(job))
+
+
+@app.get("/jobs/{job_id}/result")
+async def get_job_result(job_id: str) -> StreamingResponse:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    if job.status != "done" or job.result_data is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is not ready (status={job.status}). Poll /jobs/{{id}} first.",
+        )
+    assert job.result_content_type is not None
+    assert job.result_filename is not None
+    return StreamingResponse(
+        io.BytesIO(job.result_data),
+        media_type=job.result_content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{job.result_filename}"',
+            "Content-Length": str(len(job.result_data)),
+            "X-PixelBoost-Mode": "ai",
+            "X-PixelBoost-Job-Id": job.id,
         },
     )
