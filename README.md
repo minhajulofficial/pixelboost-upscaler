@@ -39,11 +39,14 @@ poetry run fastapi dev app/main.py     # http://localhost:8000
 
 Endpoints:
 
-| Method | Path             | Notes                                  |
-| ------ | ---------------- | -------------------------------------- |
-| GET    | `/healthz`       | reports `ai_available`                 |
-| POST   | `/upscale`       | form: `file`, `scale`, `format`, `quality`, `mode` (`fast`/`ai`) |
-| POST   | `/upscale-bulk`  | same fields, returns ZIP archive       |
+| Method | Path                   | Notes                                                                            |
+| ------ | ---------------------- | -------------------------------------------------------------------------------- |
+| GET    | `/healthz`             | reports `ai_available` + `ai_jobs_active`                                        |
+| POST   | `/upscale`             | form: `file`, `scale`, `format`, `quality`, `mode` (`fast`/`ai`)                 |
+| POST   | `/upscale-bulk`        | same fields, returns ZIP archive                                                 |
+| POST   | `/jobs/upscale-ai`     | async AI mode — returns `202` + `job_id`. Use this to avoid 100 s edge timeouts. |
+| GET    | `/jobs/{id}`           | poll for `queued`/`running`/`done`/`error` + `progress`                          |
+| GET    | `/jobs/{id}/result`    | fetch the bytes once the job is `done`                                           |
 
 For AI mode, set `PIXELBOOST_HF_SPACE` (e.g. `minhajulofficial/pixelboost-upscaler`)
 on the backend. Without it, `mode=ai` requests return HTTP 503.
