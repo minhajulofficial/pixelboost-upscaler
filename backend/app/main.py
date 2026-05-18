@@ -26,6 +26,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from typing import Literal
@@ -58,7 +59,11 @@ app.add_middleware(
 ALLOWED_SCALES: set[int] = {2, 4, 6}
 ALLOWED_FORMATS: set[str] = {"jpg", "jpeg", "png"}
 ALLOWED_MODES: set[str] = {"fast", "ai"}
-MAX_OUTPUT_PIXELS = 80_000_000  # ~80 megapixels output cap to avoid OOM on free tier
+# Output cap kept conservative for the 512MB-RAM free tier: 6× of a 1080p source
+# already lands at ~75MP and was OOM-killing the worker mid-request, surfacing
+# in the browser as a generic "Network error". 40MP keeps a single in-flight
+# request comfortably under the cap.
+MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_000_000)))
 AI_MAX_INPUT_PIXELS = 4_000_000  # AI mode is CPU-only on HF free tier; keep inputs sane
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
 # for large inputs but keep DOS protection on.
@@ -68,7 +73,12 @@ HF_SPACE = os.environ.get("PIXELBOOST_HF_SPACE", "").strip()
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
 
 _hf_client = None  # gradio_client.Client, lazily initialised
+_hf_client_created_at: float = 0.0
 _hf_client_lock = threading.Lock()
+# Re-create the gradio_client periodically. Long-lived Client instances have
+# been observed to drop their session/websocket state after extended idle,
+# which then makes subsequent .predict() calls fail with cryptic errors.
+HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "300"))
 
 
 Scale = Literal[2, 4, 6]
@@ -166,44 +176,74 @@ def _open_image(file_bytes: bytes, filename: str) -> Image.Image:
 def _enforce_output_cap(image: Image.Image, scale: int) -> tuple[int, int]:
     new_w, new_h = image.width * scale, image.height * scale
     if new_w * new_h > MAX_OUTPUT_PIXELS:
+        # Suggest the highest scale that *would* fit for this input. Gives the
+        # user something concrete to do instead of just "try smaller".
+        src_pixels = image.width * image.height
+        suggested = None
+        for s in sorted(ALLOWED_SCALES, reverse=True):
+            if s < scale and src_pixels * s * s <= MAX_OUTPUT_PIXELS:
+                suggested = s
+                break
+        suggestion = (
+            f" Try {suggested}× instead, or shrink the source." if suggested else " Try a smaller source image."
+        )
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Output too large ({new_w}×{new_h}). "
-                f"Pick a smaller image or lower scale (max ~{MAX_OUTPUT_PIXELS // 1_000_000} MP)."
+                f"Output too large at {scale}× ({new_w}×{new_h} ≈ "
+                f"{(new_w * new_h) // 1_000_000} MP, cap ~{MAX_OUTPUT_PIXELS // 1_000_000} MP)."
+                f"{suggestion}"
             ),
         )
     return new_w, new_h
 
 
 def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
+    """LANCZOS upscale with light finishing.
+
+    The finishing pass (unsharp + contrast + saturation) is applied to the
+    *small* input image first, then a single LANCZOS resize produces the
+    final output. Doing it in this order keeps peak memory roughly equal to
+    one copy of the target image (~225 MB for 6× of 1080p) instead of two,
+    which matters on the 512 MB free tier where OOM kills surface to the
+    browser as a generic "Network error".
+    """
     new_w, new_h = image.width * scale, image.height * scale
-    resized = image.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
-    sharpened = resized.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    sharpened = image.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
     contrasted = ImageEnhance.Contrast(sharpened).enhance(1.05)
-    return ImageEnhance.Color(contrasted).enhance(1.02)
+    sharpened = None  # type: ignore[assignment]  # let GC free the intermediate
+    colored = ImageEnhance.Color(contrasted).enhance(1.02)
+    contrasted = None  # type: ignore[assignment]
+    return colored.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+
+def _build_hf_client():
+    try:
+        from gradio_client import Client
+    except ImportError as exc:  # pragma: no cover - dependency missing
+        raise HTTPException(
+            status_code=503,
+            detail="AI mode unavailable: gradio_client not installed.",
+        ) from exc
+    logger.info("Connecting to HuggingFace Space %s", HF_SPACE)
+    # The token kwarg was renamed between gradio_client releases
+    # (older: ``hf_token``, newer: ``token``). Try both for compat.
+    try:
+        return Client(HF_SPACE, hf_token=HF_TOKEN, verbose=False)
+    except TypeError:
+        return Client(HF_SPACE, token=HF_TOKEN, verbose=False)
 
 
 def _get_hf_client():
-    global _hf_client
-    if _hf_client is not None:
+    global _hf_client, _hf_client_created_at
+    now = time.monotonic()
+    if _hf_client is not None and (now - _hf_client_created_at) < HF_CLIENT_TTL_SECONDS:
         return _hf_client
     with _hf_client_lock:
-        if _hf_client is None:
-            try:
-                from gradio_client import Client
-            except ImportError as exc:  # pragma: no cover - dependency missing
-                raise HTTPException(
-                    status_code=503,
-                    detail="AI mode unavailable: gradio_client not installed.",
-                ) from exc
-            logger.info("Connecting to HuggingFace Space %s", HF_SPACE)
-            # The token kwarg was renamed between gradio_client releases
-            # (older: ``hf_token``, newer: ``token``). Try both for compat.
-            try:
-                _hf_client = Client(HF_SPACE, hf_token=HF_TOKEN, verbose=False)
-            except TypeError:
-                _hf_client = Client(HF_SPACE, token=HF_TOKEN, verbose=False)
+        now = time.monotonic()
+        if _hf_client is None or (now - _hf_client_created_at) >= HF_CLIENT_TTL_SECONDS:
+            _hf_client = _build_hf_client()
+            _hf_client_created_at = now
     return _hf_client
 
 
