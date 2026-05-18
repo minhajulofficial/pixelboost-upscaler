@@ -80,6 +80,25 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
 const SCALE_OPTIONS: Scale[] = [2, 4, 6];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
+// Per-mode XHR timeouts. Fast mode should finish well under 30s; AI mode is
+// bounded by the Cloudflare/Render ~100s edge timeout, plus the HF Space's
+// 20–90s inference, so we go a bit beyond that to give the inflight request
+// a fair chance before the retry layer kicks in.
+const REQUEST_TIMEOUT_MS: Record<Mode, number> = {
+  fast: 45_000,
+  ai: 130_000,
+};
+const MAX_RETRIES = 2;
+const RETRY_BACKOFF_MS = [4_000, 12_000];
+
+// Errors that should *not* be retried (user-actionable / deterministic).
+class NonRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NonRetryableError";
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -138,6 +157,7 @@ function upscaleRequest(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}/upscale`, true);
     xhr.responseType = "blob";
+    xhr.timeout = REQUEST_TIMEOUT_MS[settings.mode];
     if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
 
     xhr.upload.onprogress = (event) => {
@@ -168,23 +188,45 @@ function upscaleRequest(
         resolve({ blob: xhr.response as Blob });
       } else {
         const blob = xhr.response as Blob | undefined;
+        const handleText = (text: string) => {
+          let detail: string;
+          try {
+            const parsed = JSON.parse(text) as { detail?: string };
+            detail = parsed.detail ?? `HTTP ${xhr.status}`;
+          } catch {
+            detail = text || `HTTP ${xhr.status}`;
+          }
+          // 4xx errors are user-actionable (file too big, wrong format,
+          // AI mode not configured) and should not be auto-retried.
+          if (xhr.status >= 400 && xhr.status < 500) {
+            reject(new NonRetryableError(detail));
+          } else {
+            reject(new Error(detail));
+          }
+        };
         if (blob && blob.type.includes("json")) {
-          blob.text().then((text) => {
-            try {
-              const parsed = JSON.parse(text) as { detail?: string };
-              reject(new Error(parsed.detail ?? `HTTP ${xhr.status}`));
-            } catch {
-              reject(new Error(text || `HTTP ${xhr.status}`));
-            }
-          });
+          blob.text().then(handleText);
         } else {
-          reject(new Error(`HTTP ${xhr.status} ${xhr.statusText || ""}`.trim()));
+          handleText(`HTTP ${xhr.status} ${xhr.statusText || ""}`.trim());
         }
       }
     };
 
-    xhr.onerror = () => reject(new Error("Network error — is the backend reachable?"));
-    xhr.ontimeout = () => reject(new Error("Request timed out"));
+    // xhr.onerror fires only on connection-level failure (TCP reset, DNS,
+    // CORS, edge timeout drop) — never on HTTP 4xx/5xx. The most common
+    // cause on our free-tier stack is the backend worker being OOM-killed
+    // mid-request (esp. at 6× fast), or the Cloudflare/Render ~100s edge
+    // closing a slow AI request. Both are transient and worth a retry.
+    xhr.onerror = () =>
+      reject(new Error("Connection dropped before the server could respond."));
+    xhr.ontimeout = () =>
+      reject(
+        new Error(
+          settings.mode === "ai"
+            ? "AI upscale took longer than the network allows. The HF Space may be cold-starting."
+            : "Request timed out.",
+        ),
+      );
     xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
 
     signal.addEventListener("abort", () => xhr.abort(), { once: true });
@@ -197,6 +239,55 @@ function upscaleRequest(
     form.append("mode", settings.mode);
     xhr.send(form);
   });
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+// Wraps upscaleRequest with a small retry budget. Only transient failures
+// (connection drops, timeouts, 5xx) are retried; 4xx and user-aborted
+// requests fail fast. Progress is reset between attempts so the UI doesn't
+// look stuck on the previous attempt's last value.
+async function upscaleWithRetry(
+  file: File,
+  settings: Settings,
+  onProgress: (pct: number) => void,
+  onAttempt: (attempt: number, lastError: Error | null) => void,
+  signal: AbortSignal,
+): Promise<UpscaleApiResult> {
+  let lastError: Error | null = null;
+  const totalAttempts = MAX_RETRIES + 1;
+  for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    onAttempt(attempt, lastError);
+    try {
+      return await upscaleRequest(file, settings, onProgress, signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (err instanceof NonRetryableError) throw err;
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt >= MAX_RETRIES) throw lastError;
+      onProgress(0);
+      await sleep(RETRY_BACKOFF_MS[attempt] ?? 12_000, signal);
+    }
+  }
+  // Unreachable, but TypeScript can't see the loop always returns/throws.
+  throw lastError ?? new Error("Upscale failed");
 }
 
 function StatusBadge({ status }: { status: ImageStatus }) {
@@ -412,10 +503,21 @@ export default function App() {
 
       updateItem(id, { status: "processing", progress: 0, error: undefined });
       try {
-        const { blob } = await upscaleRequest(
+        const { blob } = await upscaleWithRetry(
           target.file,
           settings,
           (pct) => updateItem(id, { progress: pct }),
+          (attempt, lastError) => {
+            // Surface "Retrying (1/2)..." after a transient failure so the
+            // user can tell the request is still alive.
+            if (attempt > 0 && lastError) {
+              updateItem(id, {
+                status: "processing",
+                progress: 0,
+                error: `Retrying (${attempt}/${MAX_RETRIES})… last: ${lastError.message}`,
+              });
+            }
+          },
           controller.signal,
         );
         const previousUrl = imagesRef.current.find((it) => it.id === id)?.resultUrl;
