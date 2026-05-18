@@ -55,7 +55,26 @@ interface ImageItem {
   error?: string;
 }
 
-const API_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+function parseApi(raw: string): { base: string; authHeader: string | null } {
+  const cleaned = raw.replace(/\/$/, "");
+  try {
+    const parsed = new URL(cleaned);
+    if (parsed.username || parsed.password) {
+      const creds = `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`;
+      const authHeader = `Basic ${btoa(creds)}`;
+      parsed.username = "";
+      parsed.password = "";
+      return { base: parsed.toString().replace(/\/$/, ""), authHeader };
+    }
+    return { base: cleaned, authHeader: null };
+  } catch {
+    return { base: cleaned, authHeader: null };
+  }
+}
+
+const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
+  import.meta.env.VITE_API_URL ?? "http://localhost:8000",
+);
 const SCALE_OPTIONS: Scale[] = [2, 4, 6];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
@@ -117,6 +136,7 @@ function upscaleRequest(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}/upscale`, true);
     xhr.responseType = "blob";
+    if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
