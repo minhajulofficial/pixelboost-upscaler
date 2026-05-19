@@ -1,6 +1,6 @@
 # PixelBoost
 
-> Free unlimited image upscaler. Upload JPG/PNG, pick a 2×/4×/6× scale, and get
+> Free unlimited image upscaler. Upload JPG/PNG, pick a 2× or 4× scale, and get
 > a crisp upscaled copy back. Two engines: instant **Fast** (Pillow LANCZOS) and
 > real-detail **AI Enhance** (Real-ESRGAN on a HuggingFace Space).
 
@@ -11,7 +11,7 @@
     pass. Runs in milliseconds, no AI, can't invent missing detail.
   - **AI Enhance** — Real-ESRGAN (`realesr-general-x4v3`) inference offloaded
     to a free HuggingFace Space. 20–90 s per image, recovers real texture.
-- **2×, 4×, 6× scales** in either engine.
+- **2× and 4× scales** in either engine.
 - **Bulk upload + ZIP download** via JSZip.
 - **Unlimited usage** — no sign-up, no watermark, no daily limit.
 - **Server-side processing** — the browser doesn't transcode pixels, so even

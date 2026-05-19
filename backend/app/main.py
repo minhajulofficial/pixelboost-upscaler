@@ -79,13 +79,14 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-ALLOWED_SCALES: set[int] = {2, 4, 6}
+ALLOWED_SCALES: set[int] = {2, 4}
 ALLOWED_FORMATS: set[str] = {"jpg", "jpeg", "png"}
 ALLOWED_MODES: set[str] = {"fast", "ai"}
-# Output cap kept conservative for the 512MB-RAM free tier: 6× of a 1080p source
-# already lands at ~75MP and was OOM-killing the worker mid-request, surfacing
-# in the browser as a generic "Network error". 40MP keeps a single in-flight
-# request comfortably under the cap.
+# Output cap kept conservative for the 512MB-RAM free tier. With 4× capped at
+# the top of the supported range, a 1080p input lands at ~33MP which is well
+# under the 40MP guard. The cap still protects against pathologically large
+# inputs that would otherwise OOM-kill the worker and surface as a generic
+# "Network error" in the browser.
 MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_000_000)))
 AI_MAX_INPUT_PIXELS = 4_000_000  # AI mode is CPU-only on HF free tier; keep inputs sane
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
@@ -115,7 +116,7 @@ MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(2
 JobStatus = Literal["queued", "running", "done", "error"]
 
 
-Scale = Literal[2, 4, 6]
+Scale = Literal[2, 4]
 Format = Literal["jpg", "jpeg", "png"]
 Mode = Literal["fast", "ai"]
 
@@ -270,7 +271,7 @@ def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
     The finishing pass (unsharp + contrast + saturation) is applied to the
     *small* input image first, then a single LANCZOS resize produces the
     final output. Doing it in this order keeps peak memory roughly equal to
-    one copy of the target image (~225 MB for 6× of 1080p) instead of two,
+    one copy of the target image (~100 MB for 4× of 1080p) instead of two,
     which matters on the 512 MB free tier where OOM kills surface to the
     browser as a generic "Network error".
     """

@@ -14,7 +14,7 @@ happens server-side so the client (phone or laptop) does no work.
 
 All `POST` endpoints accept the multipart form fields:
 
-- `scale` — `2`, `4`, or `6` (default `2`)
+- `scale` — `2` or `4` (default `2`)
 - `format` — `jpg` or `png` (default `jpg`)
 - `quality` — `1`–`100` (JPEG quality, default `90`)
 
