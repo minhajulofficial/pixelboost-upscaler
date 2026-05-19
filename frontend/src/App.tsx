@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-type Scale = 2 | 4 | 6;
+type Scale = 2 | 4;
 type Format = "jpg" | "png";
 type Mode = "fast" | "ai";
 
@@ -77,7 +77,7 @@ function parseApi(raw: string): { base: string; authHeader: string | null } {
 const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
-const SCALE_OPTIONS: Scale[] = [2, 4, 6];
+const SCALE_OPTIONS: Scale[] = [2, 4];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
 // Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
@@ -228,7 +228,7 @@ function upscaleSyncRequest(
     // xhr.onerror fires only on connection-level failure (TCP reset, DNS,
     // CORS, edge timeout drop) — never on HTTP 4xx/5xx. The most common
     // cause on our free-tier stack is the backend worker being OOM-killed
-    // mid-request (esp. at 6× fast), or the Cloudflare/Render ~100s edge
+    // mid-request, or the Cloudflare/Render ~100s edge
     // closing a slow AI request. Both are transient and worth a retry.
     xhr.onerror = () =>
       reject(new Error("Connection dropped before the server could respond."));
@@ -807,7 +807,7 @@ export default function App() {
             </h1>
           </div>
           <p className="max-w-xl text-sm text-violet-100/85 sm:text-base">
-            Free unlimited image upscaler. Boost JPG and PNG up to 6× — all processing happens
+            Free unlimited image upscaler. Boost JPG and PNG up to 4× — all processing happens
             on our servers so your phone doesn&apos;t break a sweat.
           </p>
         </div>
