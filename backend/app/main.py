@@ -43,7 +43,7 @@ from typing import Literal
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+from PIL import Image, ImageEnhance, ImageFilter, ImageStat, UnidentifiedImageError
 
 logger = logging.getLogger("pixelboost")
 logging.basicConfig(level=logging.INFO)
@@ -266,29 +266,39 @@ def _enforce_output_cap(image: Image.Image, scale: int) -> tuple[int, int]:
 
 
 def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
-    """Classical upscale tuned for cleaner edges and less ringing.
+    """Classical upscale tuned for stable quality across photos and graphics.
 
-    A single huge 4× jump can over-accentuate halos on text/line-art and leave
-    photos looking soft. We do a two-step LANCZOS resize (2× then final size)
-    and apply a light post-resize finishing pass. This keeps memory usage close
-    to one extra intermediate while noticeably improving perceived sharpness.
+    We resize in two passes for 4× to reduce ringing, then run a content-aware
+    finishing pass. Low-color/line-art sources get gentler sharpening and no
+    saturation lift to avoid halos and color fringing, while photos get a
+    slightly stronger local-contrast boost.
     """
     new_w, new_h = image.width * scale, image.height * scale
 
     working = image if image.mode in {"RGB", "RGBA", "L"} else image.convert("RGB")
 
-    # Stage 1: grow in smaller jumps to reduce aliasing/ringing on hard edges.
     if scale >= 4:
         mid = working.resize((image.width * 2, image.height * 2), resample=Image.Resampling.LANCZOS)
         upscaled = mid.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
     else:
         upscaled = working.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
 
-    # Stage 2: subtle finishing after resize for stronger micro-contrast.
-    sharpen_percent = 110 if scale == 2 else 140
-    finished = upscaled.filter(ImageFilter.UnsharpMask(radius=1.4, percent=sharpen_percent, threshold=2))
-    finished = ImageEnhance.Contrast(finished).enhance(1.04)
-    finished = ImageEnhance.Color(finished).enhance(1.03)
+    stats = ImageStat.Stat(upscaled.convert("RGB"))
+    channel_means = stats.mean
+    channel_spread = max(channel_means) - min(channel_means)
+    is_low_chroma = channel_spread < 7.0
+
+    sharpen_percent = 95 if is_low_chroma else (105 if scale == 2 else 125)
+    sharpen_radius = 1.15 if is_low_chroma else 1.3
+    sharpen_threshold = 3 if is_low_chroma else 2
+
+    finished = upscaled.filter(
+        ImageFilter.UnsharpMask(radius=sharpen_radius, percent=sharpen_percent, threshold=sharpen_threshold)
+    )
+    contrast_boost = 1.03 if is_low_chroma else 1.05
+    color_boost = 1.00 if is_low_chroma else 1.02
+    finished = ImageEnhance.Contrast(finished).enhance(contrast_boost)
+    finished = ImageEnhance.Color(finished).enhance(color_boost)
     return finished
 
 
