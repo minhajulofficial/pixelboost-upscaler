@@ -55,6 +55,7 @@ interface ImageItem {
   originalDimensions?: Dimensions;
   newDimensions?: Dimensions;
   error?: string;
+  uiMessage?: string;
 }
 
 function parseApi(raw: string): { base: string; authHeader: string | null } {
@@ -262,11 +263,13 @@ function submitAiJob(
   file: File,
   settings: Settings,
   onUploadProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
   signal: AbortSignal,
 ): Promise<JobStatusPayload> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}/jobs/upscale-ai`, true);
+    onStatus("Submitting AI job…");
     xhr.timeout = REQUEST_TIMEOUT_MS.ai;
     if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
 
@@ -322,6 +325,7 @@ function submitAiJob(
 async function pollAiJob(
   jobId: string,
   onProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
   signal: AbortSignal,
 ): Promise<Blob> {
   const startedAt = Date.now();
@@ -353,6 +357,7 @@ async function pollAiJob(
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
       if (err instanceof NonRetryableError) throw err;
       consecutiveFailures += 1;
+      onStatus("Connection hiccup. Retrying poll…");
       if (consecutiveFailures >= AI_POLL_MAX_CONSECUTIVE_FAILURES) {
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(`Lost connection to server while polling: ${message}`);
@@ -362,6 +367,7 @@ async function pollAiJob(
     }
 
     if (payload.status === "done") {
+      onStatus("AI upscale completed. Downloading result…");
       onProgress(0.95);
       const headers: HeadersInit = {};
       if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
@@ -373,10 +379,16 @@ async function pollAiJob(
       return await resultRes.blob();
     }
     if (payload.status === "error") {
+      onStatus("AI job failed on server.");
       throw new NonRetryableError(payload.error ?? "AI upscale failed on the server.");
     }
 
     // queued or running
+    if (payload.status === "queued") {
+      onStatus("Queued on AI worker… this can happen during cold-start.");
+    } else {
+      onStatus("AI model is processing… please wait.");
+    }
     const baseFraction = payload.status === "queued" ? 0.2 : 0.4;
     const serverProgress = Number.isFinite(payload.progress) ? payload.progress : 0;
     const reported = Math.max(
@@ -393,10 +405,12 @@ async function upscaleAiAsync(
   file: File,
   settings: Settings,
   onProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
   signal: AbortSignal,
 ): Promise<UpscaleApiResult> {
-  const job = await submitAiJob(file, settings, onProgress, signal);
-  const blob = await pollAiJob(job.id, onProgress, signal);
+  const job = await submitAiJob(file, settings, onProgress, onStatus, signal);
+  onStatus(`Job accepted (${job.id.slice(0, 8)}…). Waiting in queue…`);
+  const blob = await pollAiJob(job.id, onProgress, onStatus, signal);
   return { blob };
 }
 
@@ -404,10 +418,11 @@ function upscaleRequest(
   file: File,
   settings: Settings,
   onProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
   signal: AbortSignal,
 ): Promise<UpscaleApiResult> {
   if (settings.mode === "ai") {
-    return upscaleAiAsync(file, settings, onProgress, signal);
+    return upscaleAiAsync(file, settings, onProgress, onStatus, signal);
   }
   return upscaleSyncRequest(file, settings, onProgress, signal);
 }
@@ -439,6 +454,7 @@ async function upscaleWithRetry(
   settings: Settings,
   onProgress: (pct: number) => void,
   onAttempt: (attempt: number, lastError: Error | null) => void,
+  onStatus: (message: string) => void,
   signal: AbortSignal,
 ): Promise<UpscaleApiResult> {
   let lastError: Error | null = null;
@@ -447,7 +463,7 @@ async function upscaleWithRetry(
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     onAttempt(attempt, lastError);
     try {
-      return await upscaleRequest(file, settings, onProgress, signal);
+      return await upscaleRequest(file, settings, onProgress, onStatus, signal);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") throw err;
       if (err instanceof NonRetryableError) throw err;
@@ -672,7 +688,7 @@ export default function App() {
       const controller = abortRef.current ?? new AbortController();
       if (!abortRef.current) abortRef.current = controller;
 
-      updateItem(id, { status: "processing", progress: 0, error: undefined });
+      updateItem(id, { status: "processing", progress: 0, error: undefined, uiMessage: settings.mode === "ai" ? "Preparing AI request…" : undefined });
       try {
         const { blob } = await upscaleWithRetry(
           target.file,
@@ -685,10 +701,11 @@ export default function App() {
               updateItem(id, {
                 status: "processing",
                 progress: 0,
-                error: `Retrying (${attempt}/${MAX_RETRIES})… last: ${lastError.message}`,
+                uiMessage: `Retrying (${attempt}/${MAX_RETRIES})… last issue: ${lastError.message}`,
               });
             }
           },
+          (message) => updateItem(id, { status: "processing", uiMessage: message }),
           controller.signal,
         );
         const previousUrl = imagesRef.current.find((it) => it.id === id)?.resultUrl;
@@ -703,6 +720,7 @@ export default function App() {
           resultSize: blob.size,
           newDimensions: dims,
           error: undefined,
+          uiMessage: undefined,
         });
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
