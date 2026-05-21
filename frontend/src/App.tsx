@@ -79,8 +79,12 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
 const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
+codex/analyze-the-site-sjhhnv
+const FALLBACK_SCALES: Scale[] = [2, 4];
+=======
 codex/analyze-the-site-pkq69k
 const FALLBACK_SCALES: Scale[] = [2, 4];
+ main
  main
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
@@ -665,6 +669,10 @@ export default function App() {
     () => images.filter((i) => i.status === "done").length,
     [images],
   );
+  const processingCount = useMemo(
+    () => images.filter((i) => i.status === "processing").length,
+    [images],
+  );
 
   const updateItem = useCallback((id: string, patch: Partial<ImageItem>) => {
     setImages((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -870,6 +878,24 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-8 sm:py-10 space-y-6">
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-violet-200/80">Total Files</p>
+            <p className="text-xl font-bold text-white">{images.length}</p>
+          </div>
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-amber-200/80">Pending</p>
+            <p className="text-xl font-bold text-white">{pendingCount}</p>
+          </div>
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-sky-200/80">Processing</p>
+            <p className="text-xl font-bold text-white">{processingCount}</p>
+          </div>
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-emerald-200/80">Completed</p>
+            <p className="text-xl font-bold text-white">{doneCount}</p>
+          </div>
+        </section>
         {/* Upload Zone */}
         <section
           onDragOver={(e) => {
@@ -879,7 +905,7 @@ export default function App() {
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          className={`group cursor-pointer rounded-2xl border-2 border-dashed bg-gray-900/60 transition-all duration-200 ${
+          className={`group cursor-pointer rounded-2xl border-2 border-dashed bg-gray-900/60 backdrop-blur-sm shadow-xl shadow-black/20 transition-all duration-200 ${
             isDragging
               ? "border-purple-400 bg-purple-500/10"
               : "border-gray-700 hover:border-purple-500/70 hover:bg-gray-900"
@@ -924,7 +950,7 @@ export default function App() {
         )}
 
         {/* Settings Bar */}
-        <section className="rounded-2xl border border-gray-800 bg-gray-900 p-4 shadow-lg sm:p-5">
+        <section className="rounded-2xl border border-gray-800/80 bg-gradient-to-br from-gray-900 to-gray-900/80 p-4 shadow-xl shadow-black/30 sm:p-5">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
