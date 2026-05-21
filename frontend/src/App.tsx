@@ -79,6 +79,9 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
 const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
+codex/analyze-the-site-pkq69k
+const FALLBACK_SCALES: Scale[] = [2, 4];
+ main
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
 // Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
@@ -113,6 +116,10 @@ interface JobStatusPayload {
   queue_position?: number;
 }
 
+
+interface ApiRootPayload {
+  scales?: number[];
+}
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -601,6 +608,7 @@ export default function App() {
     quality: 90,
     mode: "fast",
   });
+  const [availableScales, setAvailableScales] = useState<Scale[]>(SCALE_OPTIONS);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -621,6 +629,31 @@ export default function App() {
         if (item.resultUrl) URL.revokeObjectURL(item.resultUrl);
       });
       abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const headers: HeadersInit = {};
+        if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+        const res = await fetch(`${API_URL}/`, { headers });
+        if (!res.ok) return;
+        const data = (await res.json()) as ApiRootPayload;
+        const fromApi = (data.scales ?? [])
+          .filter((s): s is Scale => s === 2 || s === 4 || s === 6 || s === 8)
+          .sort((a, b) => a - b);
+        const safe = fromApi.length > 0 ? fromApi : FALLBACK_SCALES;
+        if (!active) return;
+        setAvailableScales(safe);
+        setSettings((prev) => (safe.includes(prev.scale) ? prev : { ...prev, scale: safe[0] }));
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -727,7 +760,12 @@ export default function App() {
         updateItem(id, {
           status: "error",
           progress: 0,
-          error: err instanceof Error ? err.message : "Unknown error",
+          error:
+            err instanceof Error
+              ? err.message.includes("Unsupported scale")
+                ? `${err.message} This backend is on an older version. Deploy latest backend to use 6×/8×.`
+                : err.message
+              : "Unknown error",
         });
       }
     },
@@ -893,7 +931,7 @@ export default function App() {
                 Scale
               </span>
               <div className="flex rounded-full bg-gray-800 p-1">
-                {SCALE_OPTIONS.map((s) => (
+                {availableScales.map((s) => (
                   <button
                     key={s}
                     type="button"

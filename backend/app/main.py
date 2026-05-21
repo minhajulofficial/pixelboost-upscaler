@@ -592,6 +592,7 @@ def root() -> JSONResponse:
                 "/jobs/{id}/result",
             ],
             "modes": sorted(ALLOWED_MODES),
+            "scales": sorted(ALLOWED_SCALES),
             "ai_available": bool(HF_SPACE),
         }
     )
