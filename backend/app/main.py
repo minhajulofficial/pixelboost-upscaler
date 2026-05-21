@@ -79,7 +79,7 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-ALLOWED_SCALES: set[int] = {2, 4}
+ALLOWED_SCALES: set[int] = {2, 4, 6, 8}
 ALLOWED_FORMATS: set[str] = {"jpg", "jpeg", "png"}
 ALLOWED_MODES: set[str] = {"fast", "ai"}
 # Output cap kept conservative for the 512MB-RAM free tier. With 4× capped at

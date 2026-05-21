@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-type Scale = 2 | 4;
+type Scale = 2 | 4 | 6 | 8;
 type Format = "jpg" | "png";
 type Mode = "fast" | "ai";
 
@@ -77,7 +77,7 @@ function parseApi(raw: string): { base: string; authHeader: string | null } {
 const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
-const SCALE_OPTIONS: Scale[] = [2, 4];
+const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
 // Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
@@ -807,7 +807,7 @@ export default function App() {
             </h1>
           </div>
           <p className="max-w-xl text-sm text-violet-100/85 sm:text-base">
-            Free unlimited image upscaler. Boost JPG and PNG up to 4× — all processing happens
+            Free unlimited image upscaler. Boost JPG and PNG up to 8× — all processing happens
             on our servers so your phone doesn&apos;t break a sweat.
           </p>
         </div>
