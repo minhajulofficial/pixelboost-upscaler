@@ -79,7 +79,13 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
 const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
+codex/analyze-the-site-sjhhnv
 const FALLBACK_SCALES: Scale[] = [2, 4];
+=======
+codex/analyze-the-site-pkq69k
+const FALLBACK_SCALES: Scale[] = [2, 4];
+ main
+ main
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
 // Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
