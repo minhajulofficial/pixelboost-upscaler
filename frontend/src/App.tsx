@@ -79,7 +79,7 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
 const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
-const FALLBACK_SCALES: Scale[] = [2, 4];
+const DEFAULT_BACKEND_SCALES: Scale[] = [2, 4];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
 // Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
@@ -118,6 +118,13 @@ interface JobStatusPayload {
 interface ApiRootPayload {
   scales?: number[];
 }
+function normalizeBackendScales(raw: number[] | undefined): Scale[] {
+  const filtered = (raw ?? [])
+    .filter((s): s is Scale => s === 2 || s === 4 || s === 6 || s === 8)
+    .sort((a, b) => a - b);
+  return filtered.length > 0 ? filtered : DEFAULT_BACKEND_SCALES;
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -639,10 +646,7 @@ export default function App() {
         const res = await fetch(`${API_URL}/`, { headers });
         if (!res.ok) return;
         const data = (await res.json()) as ApiRootPayload;
-        const fromApi = (data.scales ?? [])
-          .filter((s): s is Scale => s === 2 || s === 4 || s === 6 || s === 8)
-          .sort((a, b) => a - b);
-        const safe = fromApi.length > 0 ? fromApi : FALLBACK_SCALES;
+        const safe = normalizeBackendScales(data.scales);
         if (!active) return;
         setAvailableScales(safe);
         setSettings((prev) => (safe.includes(prev.scale) ? prev : { ...prev, scale: safe[0] }));
