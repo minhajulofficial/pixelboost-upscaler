@@ -359,18 +359,58 @@ def _upscale_ai(image: Image.Image, scale: int, filename: str) -> Image.Image:
             from gradio_client import handle_file
         except ImportError:  # pragma: no cover - older gradio_client
             handle_file = lambda p: p  # type: ignore[assignment]
-        try:
-            result_path = client.predict(
-                image=handle_file(tmp_path),
-                scale=int(scale),
-                api_name="/upscale",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("HF Space inference failed for %s", filename)
-            raise HTTPException(
-                status_code=502,
-                detail=f"AI upscaling failed: {exc}",
-            ) from exc
+
+        # Free HF Spaces sometimes return intermittent upstream read timeouts
+        # during queue polling, especially around cold-starts. Retry once with
+        # a fresh gradio client before surfacing an error to users.
+        attempts = 2
+        last_exc: Exception | None = None
+        result_path = None
+        for attempt in range(1, attempts + 1):
+            current_client = client if attempt == 1 else _build_hf_client()
+            try:
+                result_path = current_client.predict(
+                    image=handle_file(tmp_path),
+                    scale=int(scale),
+                    api_name="/upscale",
+                )
+                if attempt > 1:
+                    global _hf_client, _hf_client_created_at
+                    with _hf_client_lock:
+                        _hf_client = current_client
+                        _hf_client_created_at = time.monotonic()
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                message = str(exc).lower()
+                retryable = any(
+                    token in message
+                    for token in (
+                        "read operation timed out",
+                        "timed out",
+                        "timeout",
+                        "connection reset",
+                        "connection aborted",
+                        "server disconnected",
+                    )
+                )
+                if attempt < attempts and retryable:
+                    logger.warning(
+                        "HF Space transient failure for %s (attempt %s/%s): %s",
+                        filename,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    continue
+                logger.exception("HF Space inference failed for %s", filename)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"AI upscaling failed: {exc}",
+                ) from exc
+
+        if result_path is None:
+            raise HTTPException(status_code=502, detail=f"AI upscaling failed: {last_exc}")
     finally:
         try:
             os.unlink(tmp_path)
