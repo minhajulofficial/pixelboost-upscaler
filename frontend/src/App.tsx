@@ -79,7 +79,6 @@ const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
 const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
-const DEFAULT_BACKEND_SCALES: Scale[] = [2, 4];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
 // Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
@@ -122,7 +121,7 @@ function normalizeBackendScales(raw: number[] | undefined): Scale[] {
   const filtered = (raw ?? [])
     .filter((s): s is Scale => s === 2 || s === 4 || s === 6 || s === 8)
     .sort((a, b) => a - b);
-  return filtered.length > 0 ? filtered : DEFAULT_BACKEND_SCALES;
+  return filtered.length > 0 ? filtered : [2, 4];
 }
 
 function formatBytes(bytes: number): string {
