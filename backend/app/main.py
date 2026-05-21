@@ -43,7 +43,7 @@ from typing import Literal
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+from PIL import Image, ImageEnhance, ImageFilter, ImageStat, UnidentifiedImageError
 
 logger = logging.getLogger("pixelboost")
 logging.basicConfig(level=logging.INFO)
@@ -79,7 +79,7 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-ALLOWED_SCALES: set[int] = {2, 4}
+ALLOWED_SCALES: set[int] = {2, 4, 6, 8}
 ALLOWED_FORMATS: set[str] = {"jpg", "jpeg", "png"}
 ALLOWED_MODES: set[str] = {"fast", "ai"}
 # Output cap kept conservative for the 512MB-RAM free tier. With 4× capped at
@@ -116,7 +116,7 @@ MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(2
 JobStatus = Literal["queued", "running", "done", "error"]
 
 
-Scale = Literal[2, 4]
+Scale = Literal[2, 4, 6, 8]
 Format = Literal["jpg", "jpeg", "png"]
 Mode = Literal["fast", "ai"]
 
@@ -266,22 +266,40 @@ def _enforce_output_cap(image: Image.Image, scale: int) -> tuple[int, int]:
 
 
 def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
-    """LANCZOS upscale with light finishing.
+    """Classical upscale tuned for stable quality across photos and graphics.
 
-    The finishing pass (unsharp + contrast + saturation) is applied to the
-    *small* input image first, then a single LANCZOS resize produces the
-    final output. Doing it in this order keeps peak memory roughly equal to
-    one copy of the target image (~100 MB for 4× of 1080p) instead of two,
-    which matters on the 512 MB free tier where OOM kills surface to the
-    browser as a generic "Network error".
+    We resize in two passes for 4× to reduce ringing, then run a content-aware
+    finishing pass. Low-color/line-art sources get gentler sharpening and no
+    saturation lift to avoid halos and color fringing, while photos get a
+    slightly stronger local-contrast boost.
     """
     new_w, new_h = image.width * scale, image.height * scale
-    sharpened = image.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-    contrasted = ImageEnhance.Contrast(sharpened).enhance(1.05)
-    sharpened = None  # type: ignore[assignment]  # let GC free the intermediate
-    colored = ImageEnhance.Color(contrasted).enhance(1.02)
-    contrasted = None  # type: ignore[assignment]
-    return colored.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+    working = image if image.mode in {"RGB", "RGBA", "L"} else image.convert("RGB")
+
+    if scale >= 4:
+        mid = working.resize((image.width * 2, image.height * 2), resample=Image.Resampling.LANCZOS)
+        upscaled = mid.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+    else:
+        upscaled = working.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+    stats = ImageStat.Stat(upscaled.convert("RGB"))
+    channel_means = stats.mean
+    channel_spread = max(channel_means) - min(channel_means)
+    is_low_chroma = channel_spread < 7.0
+
+    sharpen_percent = 95 if is_low_chroma else (105 if scale == 2 else 125)
+    sharpen_radius = 1.15 if is_low_chroma else 1.3
+    sharpen_threshold = 3 if is_low_chroma else 2
+
+    finished = upscaled.filter(
+        ImageFilter.UnsharpMask(radius=sharpen_radius, percent=sharpen_percent, threshold=sharpen_threshold)
+    )
+    contrast_boost = 1.03 if is_low_chroma else 1.05
+    color_boost = 1.00 if is_low_chroma else 1.02
+    finished = ImageEnhance.Contrast(finished).enhance(contrast_boost)
+    finished = ImageEnhance.Color(finished).enhance(color_boost)
+    return finished
 
 
 def _build_hf_client():
@@ -341,18 +359,58 @@ def _upscale_ai(image: Image.Image, scale: int, filename: str) -> Image.Image:
             from gradio_client import handle_file
         except ImportError:  # pragma: no cover - older gradio_client
             handle_file = lambda p: p  # type: ignore[assignment]
-        try:
-            result_path = client.predict(
-                image=handle_file(tmp_path),
-                scale=int(scale),
-                api_name="/upscale",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("HF Space inference failed for %s", filename)
-            raise HTTPException(
-                status_code=502,
-                detail=f"AI upscaling failed: {exc}",
-            ) from exc
+
+        # Free HF Spaces sometimes return intermittent upstream read timeouts
+        # during queue polling, especially around cold-starts. Retry once with
+        # a fresh gradio client before surfacing an error to users.
+        attempts = 2
+        last_exc: Exception | None = None
+        result_path = None
+        for attempt in range(1, attempts + 1):
+            current_client = client if attempt == 1 else _build_hf_client()
+            try:
+                result_path = current_client.predict(
+                    image=handle_file(tmp_path),
+                    scale=int(scale),
+                    api_name="/upscale",
+                )
+                if attempt > 1:
+                    global _hf_client, _hf_client_created_at
+                    with _hf_client_lock:
+                        _hf_client = current_client
+                        _hf_client_created_at = time.monotonic()
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                message = str(exc).lower()
+                retryable = any(
+                    token in message
+                    for token in (
+                        "read operation timed out",
+                        "timed out",
+                        "timeout",
+                        "connection reset",
+                        "connection aborted",
+                        "server disconnected",
+                    )
+                )
+                if attempt < attempts and retryable:
+                    logger.warning(
+                        "HF Space transient failure for %s (attempt %s/%s): %s",
+                        filename,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    continue
+                logger.exception("HF Space inference failed for %s", filename)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"AI upscaling failed: {exc}",
+                ) from exc
+
+        if result_path is None:
+            raise HTTPException(status_code=502, detail=f"AI upscaling failed: {last_exc}")
     finally:
         try:
             os.unlink(tmp_path)
@@ -534,6 +592,7 @@ def root() -> JSONResponse:
                 "/jobs/{id}/result",
             ],
             "modes": sorted(ALLOWED_MODES),
+            "scales": sorted(ALLOWED_SCALES),
             "ai_available": bool(HF_SPACE),
         }
     )
