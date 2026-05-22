@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-type Scale = 2 | 4 | 6 | 8;
+type Scale = 2 | 4 | 6;
 type Format = "jpg" | "png";
 type Mode = "fast" | "ai";
 
@@ -78,10 +78,10 @@ function parseApi(raw: string): { base: string; authHeader: string | null } {
 const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
-const SCALE_OPTIONS: Scale[] = [2, 4, 6, 8];
+const SCALE_OPTIONS: Scale[] = [2, 4, 6];
 // Used when the backend's GET / response doesn't include a `scales` field
 // (older deploys, or any future host that strips the body) — keep the UI
-// to the always-supported core scales so 6×/8× buttons can't fail.
+// to the always-supported core scales so 6× buttons can't fail.
 const FALLBACK_SCALES: Scale[] = [2, 4];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
@@ -643,7 +643,7 @@ export default function App() {
         if (!res.ok) return;
         const data = (await res.json()) as ApiRootPayload;
         const fromApi = (data.scales ?? [])
-          .filter((s): s is Scale => s === 2 || s === 4 || s === 6 || s === 8)
+          .filter((s): s is Scale => s === 2 || s === 4 || s === 6)
           .sort((a, b) => a - b);
         const safe = fromApi.length > 0 ? fromApi : FALLBACK_SCALES;
         if (!active) return;
@@ -768,7 +768,7 @@ export default function App() {
           error:
             err instanceof Error
               ? err.message.includes("Unsupported scale")
-                ? `${err.message} This backend is on an older version. Deploy latest backend to use 6×/8×.`
+                ? `${err.message} This backend is on an older version. Deploy latest backend to use 6×.`
                 : err.message
               : "Unknown error",
         });
@@ -868,7 +868,7 @@ export default function App() {
             </h1>
           </div>
           <p className="max-w-xl text-sm text-violet-100/85 sm:text-base">
-            Free unlimited image upscaler. Boost JPG and PNG up to 8× — all processing happens
+            Free unlimited image upscaler. Boost JPG and PNG up to 6× — all processing happens
             on our servers so your phone doesn&apos;t break a sweat.
           </p>
         </div>

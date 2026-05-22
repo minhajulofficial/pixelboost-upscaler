@@ -79,7 +79,7 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-ALLOWED_SCALES: set[int] = {2, 4, 6, 8}
+ALLOWED_SCALES: set[int] = {2, 4, 6}
 ALLOWED_FORMATS: set[str] = {"jpg", "jpeg", "png"}
 ALLOWED_MODES: set[str] = {"fast", "ai"}
 # Output cap kept conservative for the 512MB-RAM free tier. With 4× capped at
@@ -116,7 +116,7 @@ MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(2
 JobStatus = Literal["queued", "running", "done", "error"]
 
 
-Scale = Literal[2, 4, 6, 8]
+Scale = Literal[2, 4, 6]
 Format = Literal["jpg", "jpeg", "png"]
 Mode = Literal["fast", "ai"]
 
