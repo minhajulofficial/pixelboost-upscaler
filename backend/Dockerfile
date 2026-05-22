@@ -19,6 +19,13 @@ RUN poetry install --no-root --only main
 
 COPY app ./app
 
+# Build-time git commit for /version. Render auto-injects RENDER_GIT_COMMIT
+# at runtime, so this ARG is only used by hosts that don't (Fly.io, Railway,
+# local docker build, etc.). Defaults to "unknown" — keep it that way unless
+# the build is actually passing --build-arg GIT_COMMIT=...
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 EXPOSE 8000
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

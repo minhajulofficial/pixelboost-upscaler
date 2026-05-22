@@ -116,9 +116,21 @@ MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(2
 JobStatus = Literal["queued", "running", "done", "error"]
 
 
-Scale = Literal[2, 4]
+Scale = Literal[2, 4, 6, 8]
 Format = Literal["jpg", "jpeg", "png"]
 Mode = Literal["fast", "ai"]
+
+# Build/deploy identifiers exposed at /version so we can tell at a glance
+# whether the live service is on a stale commit. Render auto-injects
+# ``RENDER_GIT_COMMIT`` for autodeployed services; other hosts can pass
+# ``GIT_COMMIT`` explicitly via the Dockerfile / deploy config.
+GIT_COMMIT = (
+    os.environ.get("RENDER_GIT_COMMIT")
+    or os.environ.get("GIT_COMMIT")
+    or os.environ.get("COMMIT_SHA")
+    or "unknown"
+)
+GIT_BRANCH = os.environ.get("RENDER_GIT_BRANCH") or os.environ.get("GIT_BRANCH") or "unknown"
 
 
 @dataclass(slots=True)
@@ -578,6 +590,26 @@ def healthz() -> dict[str, str | bool | int]:
     return {"status": "ok", "ai_available": bool(HF_SPACE), "ai_jobs_active": active}
 
 
+@app.get("/version")
+def version() -> dict[str, object]:
+    """Identify what's actually deployed.
+
+    Returns the git commit/branch the running container was built from plus
+    the feature surface (supported scales, modes, AI availability). Makes
+    deploy drift (live service older than ``main``) obvious without having
+    to probe individual endpoints.
+    """
+    return {
+        "git_commit": GIT_COMMIT,
+        "git_branch": GIT_BRANCH,
+        "scales": sorted(ALLOWED_SCALES),
+        "modes": sorted(ALLOWED_MODES),
+        "ai_available": bool(HF_SPACE),
+        "max_output_pixels": MAX_OUTPUT_PIXELS,
+        "ai_max_input_pixels": AI_MAX_INPUT_PIXELS,
+    }
+
+
 @app.get("/")
 def root() -> JSONResponse:
     return JSONResponse(
@@ -585,6 +617,7 @@ def root() -> JSONResponse:
             "name": "PixelBoost API",
             "endpoints": [
                 "/healthz",
+                "/version",
                 "/upscale",
                 "/upscale-bulk",
                 "/jobs/upscale-ai",
@@ -594,6 +627,7 @@ def root() -> JSONResponse:
             "modes": sorted(ALLOWED_MODES),
             "scales": sorted(ALLOWED_SCALES),
             "ai_available": bool(HF_SPACE),
+            "git_commit": GIT_COMMIT,
         }
     )
 
