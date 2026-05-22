@@ -14,6 +14,10 @@
 - **2×, 4×, 6×, and 8× scales** in either engine.
 - **Bulk upload + ZIP download** via JSZip.
 - **Unlimited usage** — no sign-up, no watermark, no daily limit.
+  (Per-image limits still apply for free-tier stability: Fast mode caps
+  output at **40 MP** total pixels, AI mode caps input at **4 MP** since the
+  HuggingFace Space is CPU-only. Inputs above these are rejected with a
+  clear 400. The frontend will pre-warn before submit when possible.)
 - **Server-side processing** — the browser doesn't transcode pixels, so even
   budget Android phones can upscale 12 MP photos.
 - **Mobile-first dark UI** built with React, TypeScript, and Tailwind CSS.
@@ -42,6 +46,7 @@ Endpoints:
 | Method | Path                   | Notes                                                                            |
 | ------ | ---------------------- | -------------------------------------------------------------------------------- |
 | GET    | `/healthz`             | reports `ai_available` + `ai_jobs_active`                                        |
+| GET    | `/version`             | reports `git_commit`, supported `scales`/`modes`, caps — use to detect deploy drift |
 | POST   | `/upscale`             | form: `file`, `scale`, `format`, `quality`, `mode` (`fast`/`ai`)                 |
 | POST   | `/upscale-bulk`        | same fields, returns ZIP archive                                                 |
 | POST   | `/jobs/upscale-ai`     | async AI mode — returns `202` + `job_id`. Use this to avoid 100 s edge timeouts. |
