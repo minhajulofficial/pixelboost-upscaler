@@ -14,7 +14,7 @@ Bare PyTorch keeps cold-start under a minute.
 
 Scales:
 - 4x: native single forward pass.
-- 2x / 6x / 8x: 4x forward pass + LANCZOS resize to the target size.
+- 2x / 6x: 4x forward pass + LANCZOS resize to the target size.
 """
 
 from __future__ import annotations
@@ -185,8 +185,8 @@ def upscale(image: Image.Image | None, scale: int = 4) -> Image.Image:
     """Run Real-ESRGAN inference and resize to the requested scale."""
     if image is None:
         raise gr.Error("No image provided.")
-    if int(scale) not in {2, 4, 6, 8}:
-        raise gr.Error("Scale must be 2, 4, 6, or 8.")
+    if int(scale) not in {2, 4, 6}:
+        raise gr.Error("Scale must be 2, 4, or 6.")
 
     image = image.convert("RGB")
     if image.width * image.height > MAX_INPUT_PIXELS:
@@ -208,7 +208,7 @@ demo = gr.Interface(
     fn=upscale,
     inputs=[
         gr.Image(type="pil", label="Input image"),
-        gr.Radio([2, 4, 6, 8], value=4, label="Scale", type="value"),
+        gr.Radio([2, 4, 6], value=4, label="Scale", type="value"),
     ],
     outputs=gr.Image(type="pil", label="Upscaled", format="png"),
     title="PixelBoost AI Upscaler",
