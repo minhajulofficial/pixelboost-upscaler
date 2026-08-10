@@ -25,11 +25,13 @@ import "./App.css";
 
 type Scale = 2 | 4 | 6;
 type Format = "jpg" | "png";
+type Mode = "fast" | "ai";
 
 interface Settings {
   scale: Scale;
   format: Format;
   quality: number;
+  mode: Mode;
 }
 
 interface Dimensions {
@@ -53,12 +55,72 @@ interface ImageItem {
   originalDimensions?: Dimensions;
   newDimensions?: Dimensions;
   error?: string;
+  uiMessage?: string;
 }
 
-const API_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+function parseApi(raw: string): { base: string; authHeader: string | null } {
+  const cleaned = raw.replace(/\/$/, "");
+  try {
+    const parsed = new URL(cleaned);
+    if (parsed.username || parsed.password) {
+      const creds = `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`;
+      const authHeader = `Basic ${btoa(creds)}`;
+      parsed.username = "";
+      parsed.password = "";
+      return { base: parsed.toString().replace(/\/$/, ""), authHeader };
+    }
+    return { base: cleaned, authHeader: null };
+  } catch {
+    return { base: cleaned, authHeader: null };
+  }
+}
+
+const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
+  import.meta.env.VITE_API_URL ?? "http://localhost:8000",
+);
 const SCALE_OPTIONS: Scale[] = [2, 4, 6];
+// Used when the backend's GET / response doesn't include a `scales` field
+// (older deploys, or any future host that strips the body) — keep the UI
+// to the always-supported core scales so 6× buttons can't fail.
+const FALLBACK_SCALES: Scale[] = [2, 4];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
+// Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
+// short *submit* request followed by polling — see submitAiJob / pollAiJob.
+const REQUEST_TIMEOUT_MS: Record<Mode, number> = {
+  fast: 45_000,
+  ai: 45_000,
+};
+const MAX_RETRIES = 2;
+const RETRY_BACKOFF_MS = [4_000, 12_000];
+
+// AI async-job polling parameters.
+const AI_POLL_INTERVAL_MS = 3_000;
+const AI_POLL_MAX_LIFETIME_MS = 10 * 60_000; // 10 min wall-clock per job
+const AI_POLL_MAX_CONSECUTIVE_FAILURES = 6;
+
+// Errors that should *not* be retried (user-actionable / deterministic).
+class NonRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NonRetryableError";
+  }
+}
+
+interface JobStatusPayload {
+  id: string;
+  status: "queued" | "running" | "done" | "error";
+  progress: number;
+  error?: string;
+  result_url?: string;
+  result_filename?: string;
+  queue_position?: number;
+}
+
+
+interface ApiRootPayload {
+  scales?: number[];
+}
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -107,7 +169,7 @@ interface UpscaleApiResult {
   blob: Blob;
 }
 
-function upscaleRequest(
+function upscaleSyncRequest(
   file: File,
   settings: Settings,
   onProgress: (pct: number) => void,
@@ -117,6 +179,8 @@ function upscaleRequest(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}/upscale`, true);
     xhr.responseType = "blob";
+    xhr.timeout = REQUEST_TIMEOUT_MS[settings.mode];
+    if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -146,23 +210,113 @@ function upscaleRequest(
         resolve({ blob: xhr.response as Blob });
       } else {
         const blob = xhr.response as Blob | undefined;
+        const handleText = (text: string) => {
+          let detail: string;
+          try {
+            const parsed = JSON.parse(text) as { detail?: string };
+            detail = parsed.detail ?? `HTTP ${xhr.status}`;
+          } catch {
+            detail = text || `HTTP ${xhr.status}`;
+          }
+          // 4xx errors are user-actionable (file too big, wrong format,
+          // AI mode not configured) and should not be auto-retried.
+          if (xhr.status >= 400 && xhr.status < 500) {
+            reject(new NonRetryableError(detail));
+          } else {
+            reject(new Error(detail));
+          }
+        };
         if (blob && blob.type.includes("json")) {
-          blob.text().then((text) => {
-            try {
-              const parsed = JSON.parse(text) as { detail?: string };
-              reject(new Error(parsed.detail ?? `HTTP ${xhr.status}`));
-            } catch {
-              reject(new Error(text || `HTTP ${xhr.status}`));
-            }
-          });
+          blob.text().then(handleText);
         } else {
-          reject(new Error(`HTTP ${xhr.status} ${xhr.statusText || ""}`.trim()));
+          handleText(`HTTP ${xhr.status} ${xhr.statusText || ""}`.trim());
         }
       }
     };
 
-    xhr.onerror = () => reject(new Error("Network error — is the backend reachable?"));
-    xhr.ontimeout = () => reject(new Error("Request timed out"));
+    // xhr.onerror fires only on connection-level failure (TCP reset, DNS,
+    // CORS, edge timeout drop) — never on HTTP 4xx/5xx. The most common
+    // cause on our free-tier stack is the backend worker being OOM-killed
+    // mid-request, or the Cloudflare/Render ~100s edge
+    // closing a slow AI request. Both are transient and worth a retry.
+    xhr.onerror = () =>
+      reject(new Error("Connection dropped before the server could respond."));
+    xhr.ontimeout = () =>
+      reject(
+        new Error(
+          settings.mode === "ai"
+            ? "AI upscale took longer than the network allows. The HF Space may be cold-starting."
+            : "Request timed out.",
+        ),
+      );
+    xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+
+    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+
+    const form = new FormData();
+    form.append("file", file);
+    form.append("scale", String(settings.scale));
+    form.append("format", settings.format);
+    form.append("quality", String(settings.quality));
+    form.append("mode", settings.mode);
+    xhr.send(form);
+  });
+}
+
+// AI mode async-job flow. We POST once to /jobs/upscale-ai (returns 202 +
+// job_id), then poll /jobs/{id} every few seconds until status is "done"
+// or "error", then fetch the result blob. This sidesteps the ~100s
+// Cloudflare/Render edge timeout that was dropping slow AI requests.
+function submitAiJob(
+  file: File,
+  settings: Settings,
+  onUploadProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
+  signal: AbortSignal,
+): Promise<JobStatusPayload> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/jobs/upscale-ai`, true);
+    onStatus("Submitting AI job…");
+    xhr.timeout = REQUEST_TIMEOUT_MS.ai;
+    if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const fraction = event.loaded / event.total;
+        // Reserve 0–0.2 of the total progress bar for the upload itself; the
+        // rest is filled in by poll updates.
+        onUploadProgress(Math.min(0.2, fraction * 0.2));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status === 202) {
+        try {
+          const data = JSON.parse(xhr.responseText) as JobStatusPayload;
+          resolve(data);
+        } catch {
+          reject(new Error("Could not parse job-submit response."));
+        }
+        return;
+      }
+      let detail = `HTTP ${xhr.status}`;
+      try {
+        const parsed = JSON.parse(xhr.responseText) as { detail?: string };
+        if (parsed.detail) detail = parsed.detail;
+      } catch {
+        // ignore
+      }
+      if (xhr.status >= 400 && xhr.status < 500) {
+        reject(new NonRetryableError(detail));
+      } else {
+        reject(new Error(detail));
+      }
+    };
+    xhr.onerror = () =>
+      reject(new Error("Connection dropped while submitting AI job."));
+    xhr.ontimeout = () =>
+      reject(new Error("Submitting AI job timed out. The backend may be cold-starting."));
     xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
 
     signal.addEventListener("abort", () => xhr.abort(), { once: true });
@@ -174,6 +328,161 @@ function upscaleRequest(
     form.append("quality", String(settings.quality));
     xhr.send(form);
   });
+}
+
+async function pollAiJob(
+  jobId: string,
+  onProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const startedAt = Date.now();
+  let consecutiveFailures = 0;
+  let lastReportedFraction = 0.2;
+
+  while (true) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    if (Date.now() - startedAt > AI_POLL_MAX_LIFETIME_MS) {
+      throw new Error("AI job is taking longer than 10 minutes — giving up.");
+    }
+
+    let payload: JobStatusPayload | null = null;
+    try {
+      const headers: HeadersInit = {};
+      if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+      const res = await fetch(`${API_URL}/jobs/${jobId}`, { signal, headers });
+      if (res.status === 404) {
+        throw new NonRetryableError(
+          "Job not found on the server — it may have expired. Please re-submit.",
+        );
+      }
+      if (!res.ok) {
+        throw new Error(`Job poll failed: HTTP ${res.status}`);
+      }
+      payload = (await res.json()) as JobStatusPayload;
+      consecutiveFailures = 0;
+    } catch (err) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (err instanceof NonRetryableError) throw err;
+      consecutiveFailures += 1;
+      onStatus("Connection hiccup. Retrying poll…");
+      if (consecutiveFailures >= AI_POLL_MAX_CONSECUTIVE_FAILURES) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Lost connection to server while polling: ${message}`);
+      }
+      await sleep(AI_POLL_INTERVAL_MS, signal);
+      continue;
+    }
+
+    if (payload.status === "done") {
+      onStatus("AI upscale completed. Downloading result…");
+      onProgress(0.95);
+      const headers: HeadersInit = {};
+      if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+      const resultRes = await fetch(`${API_URL}/jobs/${jobId}/result`, { signal, headers });
+      if (!resultRes.ok) {
+        throw new Error(`Could not fetch AI result: HTTP ${resultRes.status}`);
+      }
+      onProgress(1);
+      return await resultRes.blob();
+    }
+    if (payload.status === "error") {
+      onStatus("AI job failed on server.");
+      throw new NonRetryableError(payload.error ?? "AI upscale failed on the server.");
+    }
+
+    // queued or running
+    if (payload.status === "queued") {
+      onStatus("Queued on AI worker… this can happen during cold-start.");
+    } else {
+      onStatus("AI model is processing… please wait.");
+    }
+    const baseFraction = payload.status === "queued" ? 0.2 : 0.4;
+    const serverProgress = Number.isFinite(payload.progress) ? payload.progress : 0;
+    const reported = Math.max(
+      lastReportedFraction,
+      Math.min(0.94, baseFraction + serverProgress * 0.5),
+    );
+    lastReportedFraction = reported;
+    onProgress(reported);
+    await sleep(AI_POLL_INTERVAL_MS, signal);
+  }
+}
+
+async function upscaleAiAsync(
+  file: File,
+  settings: Settings,
+  onProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
+  signal: AbortSignal,
+): Promise<UpscaleApiResult> {
+  const job = await submitAiJob(file, settings, onProgress, onStatus, signal);
+  onStatus(`Job accepted (${job.id.slice(0, 8)}…). Waiting in queue…`);
+  const blob = await pollAiJob(job.id, onProgress, onStatus, signal);
+  return { blob };
+}
+
+function upscaleRequest(
+  file: File,
+  settings: Settings,
+  onProgress: (pct: number) => void,
+  onStatus: (message: string) => void,
+  signal: AbortSignal,
+): Promise<UpscaleApiResult> {
+  if (settings.mode === "ai") {
+    return upscaleAiAsync(file, settings, onProgress, onStatus, signal);
+  }
+  return upscaleSyncRequest(file, settings, onProgress, signal);
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+// Wraps upscaleRequest with a small retry budget. Only transient failures
+// (connection drops, timeouts, 5xx) are retried; 4xx and user-aborted
+// requests fail fast. Progress is reset between attempts so the UI doesn't
+// look stuck on the previous attempt's last value.
+async function upscaleWithRetry(
+  file: File,
+  settings: Settings,
+  onProgress: (pct: number) => void,
+  onAttempt: (attempt: number, lastError: Error | null) => void,
+  onStatus: (message: string) => void,
+  signal: AbortSignal,
+): Promise<UpscaleApiResult> {
+  let lastError: Error | null = null;
+  const totalAttempts = MAX_RETRIES + 1;
+  for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    onAttempt(attempt, lastError);
+    try {
+      return await upscaleRequest(file, settings, onProgress, onStatus, signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (err instanceof NonRetryableError) throw err;
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt >= MAX_RETRIES) throw lastError;
+      onProgress(0);
+      await sleep(RETRY_BACKOFF_MS[attempt] ?? 12_000, signal);
+    }
+  }
+  // Unreachable, but TypeScript can't see the loop always returns/throws.
+  throw lastError ?? new Error("Upscale failed");
 }
 
 function StatusBadge({ status }: { status: ImageStatus }) {
@@ -298,7 +607,9 @@ export default function App() {
     scale: 2,
     format: "jpg",
     quality: 90,
+    mode: "fast",
   });
+  const [availableScales, setAvailableScales] = useState<Scale[]>(SCALE_OPTIONS);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -322,12 +633,41 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const headers: HeadersInit = {};
+        if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+        const res = await fetch(`${API_URL}/`, { headers });
+        if (!res.ok) return;
+        const data = (await res.json()) as ApiRootPayload;
+        const fromApi = (data.scales ?? [])
+          .filter((s): s is Scale => s === 2 || s === 4 || s === 6)
+          .sort((a, b) => a - b);
+        const safe = fromApi.length > 0 ? fromApi : FALLBACK_SCALES;
+        if (!active) return;
+        setAvailableScales(safe);
+        setSettings((prev) => (safe.includes(prev.scale) ? prev : { ...prev, scale: safe[0] }));
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const pendingCount = useMemo(
     () => images.filter((i) => i.status === "pending" || i.status === "error").length,
     [images],
   );
   const doneCount = useMemo(
     () => images.filter((i) => i.status === "done").length,
+    [images],
+  );
+  const processingCount = useMemo(
+    () => images.filter((i) => i.status === "processing").length,
     [images],
   );
 
@@ -386,12 +726,24 @@ export default function App() {
       const controller = abortRef.current ?? new AbortController();
       if (!abortRef.current) abortRef.current = controller;
 
-      updateItem(id, { status: "processing", progress: 0, error: undefined });
+      updateItem(id, { status: "processing", progress: 0, error: undefined, uiMessage: settings.mode === "ai" ? "Preparing AI request…" : undefined });
       try {
-        const { blob } = await upscaleRequest(
+        const { blob } = await upscaleWithRetry(
           target.file,
           settings,
           (pct) => updateItem(id, { progress: pct }),
+          (attempt, lastError) => {
+            // Surface "Retrying (1/2)..." after a transient failure so the
+            // user can tell the request is still alive.
+            if (attempt > 0 && lastError) {
+              updateItem(id, {
+                status: "processing",
+                progress: 0,
+                uiMessage: `Retrying (${attempt}/${MAX_RETRIES})… last issue: ${lastError.message}`,
+              });
+            }
+          },
+          (message) => updateItem(id, { status: "processing", uiMessage: message }),
           controller.signal,
         );
         const previousUrl = imagesRef.current.find((it) => it.id === id)?.resultUrl;
@@ -406,13 +758,19 @@ export default function App() {
           resultSize: blob.size,
           newDimensions: dims,
           error: undefined,
+          uiMessage: undefined,
         });
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         updateItem(id, {
           status: "error",
           progress: 0,
-          error: err instanceof Error ? err.message : "Unknown error",
+          error:
+            err instanceof Error
+              ? err.message.includes("Unsupported scale")
+                ? `${err.message} This backend is on an older version. Deploy latest backend to use 6×.`
+                : err.message
+              : "Unknown error",
         });
       }
     },
@@ -517,6 +875,24 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-8 sm:py-10 space-y-6">
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-violet-200/80">Total Files</p>
+            <p className="text-xl font-bold text-white">{images.length}</p>
+          </div>
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-amber-200/80">Pending</p>
+            <p className="text-xl font-bold text-white">{pendingCount}</p>
+          </div>
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-sky-200/80">Processing</p>
+            <p className="text-xl font-bold text-white">{processingCount}</p>
+          </div>
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-emerald-200/80">Completed</p>
+            <p className="text-xl font-bold text-white">{doneCount}</p>
+          </div>
+        </section>
         {/* Upload Zone */}
         <section
           onDragOver={(e) => {
@@ -526,7 +902,7 @@ export default function App() {
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          className={`group cursor-pointer rounded-2xl border-2 border-dashed bg-gray-900/60 transition-all duration-200 ${
+          className={`group cursor-pointer rounded-2xl border-2 border-dashed bg-gray-900/60 backdrop-blur-sm shadow-xl shadow-black/20 transition-all duration-200 ${
             isDragging
               ? "border-purple-400 bg-purple-500/10"
               : "border-gray-700 hover:border-purple-500/70 hover:bg-gray-900"
@@ -571,14 +947,14 @@ export default function App() {
         )}
 
         {/* Settings Bar */}
-        <section className="rounded-2xl border border-gray-800 bg-gray-900 p-4 shadow-lg sm:p-5">
+        <section className="rounded-2xl border border-gray-800/80 bg-gradient-to-br from-gray-900 to-gray-900/80 p-4 shadow-xl shadow-black/30 sm:p-5">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
                 Scale
               </span>
               <div className="flex rounded-full bg-gray-800 p-1">
-                {SCALE_OPTIONS.map((s) => (
+                {availableScales.map((s) => (
                   <button
                     key={s}
                     type="button"
@@ -639,6 +1015,50 @@ export default function App() {
                   {settings.quality}
                 </span>
               </div>
+            )}
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-start gap-3 border-t border-gray-800 pt-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                Engine
+              </span>
+              <div className="flex rounded-full bg-gray-800 p-1">
+                <button
+                  type="button"
+                  onClick={() => setSettings((prev) => ({ ...prev, mode: "fast" }))}
+                  className={`min-h-[36px] rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
+                    settings.mode === "fast"
+                      ? "bg-purple-600 text-white shadow-md shadow-purple-900/40"
+                      : "text-gray-300 hover:text-white"
+                  }`}
+                  aria-pressed={settings.mode === "fast"}
+                  title="Pillow LANCZOS — instant, classical resize with mild sharpening"
+                >
+                  Fast
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettings((prev) => ({ ...prev, mode: "ai" }))}
+                  className={`min-h-[36px] inline-flex items-center gap-1 rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
+                    settings.mode === "ai"
+                      ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-md shadow-fuchsia-900/40"
+                      : "text-gray-300 hover:text-white"
+                  }`}
+                  aria-pressed={settings.mode === "ai"}
+                  title="Real-ESRGAN on HuggingFace Spaces — slower (20–90s) but real detail recovery"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  AI Enhance
+                </button>
+              </div>
+            </div>
+            {settings.mode === "ai" && (
+              <p className="flex-1 min-w-[220px] text-xs text-fuchsia-200/80">
+                AI mode runs Real-ESRGAN on a free HuggingFace Space.
+                Expect 20–90 seconds per image and a possible ~30s cold start
+                if the Space is asleep.
+              </p>
             )}
           </div>
         </section>
