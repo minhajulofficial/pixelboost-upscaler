@@ -73,7 +73,7 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "label": "AI Plus (RealESRGAN x4plus)",
         "url": (
             "https://github.com/xinntao/Real-ESRGAN/releases/download/"
-            "v0.2.1.0/RealESRGAN_x4plus.pth"
+            "v0.1.0/RealESRGAN_x4plus.pth"
         ),
         "tile": int(os.environ.get("PIXELBOOST_TILE_X4PLUS", "256")),
         "parallel": False,
