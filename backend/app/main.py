@@ -640,7 +640,7 @@ def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filen
                     # Older Space deployed without model/face inputs rejects
                     # unknown params with a message like "not defined in the
                     # endpoint's input" or "unknown parameter".
-                    if any(t in msg for t in ("unexpected keyword", "unknown", "not defined", "not a valid input")):
+                    if any(t in msg for t in ("unexpected keyword", "unknown", "not defined", "not a valid input", "key-word argument", "keyword argument")):
                         result_path = current_client.predict(
                             image=handle_file(tmp_path),
                             scale=int(scale),
