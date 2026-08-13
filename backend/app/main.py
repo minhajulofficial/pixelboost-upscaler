@@ -635,10 +635,12 @@ def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filen
                         **kwargs,
                         api_name="/upscale",
                     )
-                except (TypeError, ValueError) as exc:
+                except (TypeError, ValueError, KeyError) as exc:
                     msg = str(exc).lower()
-                    if "unexpected keyword" in msg or "unknown" in msg or "api_name" in msg:
-                        # Older Space deployed without model/face inputs.
+                    # Older Space deployed without model/face inputs rejects
+                    # unknown params with a message like "not defined in the
+                    # endpoint's input" or "unknown parameter".
+                    if any(t in msg for t in ("unexpected keyword", "unknown", "not defined", "not a valid input")):
                         result_path = current_client.predict(
                             image=handle_file(tmp_path),
                             scale=int(scale),
