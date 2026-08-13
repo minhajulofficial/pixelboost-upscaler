@@ -1,34 +1,58 @@
 """PixelBoost backend — image upscaling service.
 
-Two modes are supported:
+Modes:
 
 ``fast`` (default)
     Pure Pillow pipeline: open → LANCZOS resize → mild unsharp/contrast/
-    saturation finishing pass → encode. Runs in milliseconds with negligible
-    memory, but cannot recover or invent detail — it is a classical resampler.
+    saturation finishing pass → encode. Milliseconds, negligible memory.
 
-``ai``
-    Real-ESRGAN inference is offloaded to a HuggingFace Space (configured via
-    ``PIXELBOOST_HF_SPACE``). We send the input to the Space via
-    ``gradio_client``, receive the upscaled image, then re-encode in the
-    requested format/quality so the response shape matches ``fast`` mode.
-    Slower (20-90s per image on free CPU) but produces real, detail-rich
-    upscales.
+``ai-fast``
+    Real-ESRGAN ``realesr-general-x4v3`` via the HuggingFace Space — fast,
+    detail-rich general upscales (~15-40s on free CPU).
 
-The ``/upscale-bulk`` endpoint loops over files using the same mode and
-returns a ZIP archive.
+``ai-plus``
+    Real-ESRGAN ``RealESRGAN_x4plus`` via the Space — best quality, slower.
+    ``ai`` is accepted as an alias for ``ai-plus`` (backward compat).
 
-AI mode also exposes an asynchronous job API (``POST /jobs/upscale-ai``,
-``GET /jobs/{id}``, ``GET /jobs/{id}/result``) which lets the client poll
-for a result instead of holding open a single long HTTP request. This
-bypasses the ~100s Cloudflare/Render edge timeout that otherwise drops
-slow AI requests partway through.
+``anime``
+    Real-ESRGAN ``RealESRGAN_x4plus_anime_6B`` via the Space — tuned for
+    illustrations / anime.
+
+All AI modes additionally support a ``face`` flag: when enabled the Space
+runs a CPU-safe face-refine pass (Haar face detection + CLAHE/unsharp) on the
+upscaled output.
+
+Scales: 2 / 3 / 4 / 6 / 8. The Space natively upscales 4x; other targets are
+reached by a native 4x pass + LANCZOS resize. 8x additionally chains a second
+4x pass on tiny inputs (when the intermediate fits the Space input cap).
+
+Protection & stability:
+
+- ``PIXELBOOST_SHARED_TOKEN`` — if set, multi-part upscale endpoints require
+  the header ``X-PixelBoost-Token`` (or ``Authorization: Bearer``). The
+  static frontend normally goes through a serverless proxy (Vercel
+  ``/api/upscale-proxy``) which injects the token server-side, so the token
+  never ships to browsers.
+- ``/warm-ai`` — lightweight keep-alive hook. A GitHub Actions cron hits
+  ``/healthz`` + ``/warm-ai`` every ~10 minutes so the free Render instance and
+  the HF Space model stay warm (avoids 20-60s cold starts on real requests).
+- Result cache — output bytes are memoized on disk keyed by a hash of
+  (image + mode + model + face + scale + format + quality). Re-requests return
+  instantly. If Firebase Admin is configured (``FIREBASE_ADMIN_SDK_JSON``,
+  ``FIREBASE_STORAGE_BUCKET``) the blob is also mirrored to Storage so the
+  cache survives restarts (best-effort).
+- Optional GPU workers: free-runner Colab notebooks can register themselves
+  via ``POST /workers/register`` (see ``colab/pixelboost_t4_turbo.ipynb``).
+  AI jobs are routed to a registered GPU worker when one is healthy, else they
+  fall back to the HF Space automatically.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
+import json
 import logging
 import os
 import tempfile
@@ -40,7 +64,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from PIL import Image, ImageEnhance, ImageFilter, ImageStat, UnidentifiedImageError
@@ -52,8 +76,7 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     # Start the AI job worker on app startup so /jobs/upscale-ai submissions
-    # can be drained in the background while HTTP requests continue to be
-    # served. Stop it on shutdown.
+    # can be drained in the background. Stop it on shutdown.
     await _start_jobs_worker()
     try:
         yield
@@ -64,12 +87,12 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(
     title="PixelBoost API",
     description="Free unlimited image upscaler.",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=_lifespan,
 )
 
 # CORS — keep wide open so the static frontend (Cloudflare Pages, Vercel, etc.)
-# can call the API directly. Do not remove.
+# can call the API directly.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,16 +102,19 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-ALLOWED_SCALES: set[int] = {2, 4, 6}
+ALLOWED_SCALES: set[int] = {2, 3, 4, 6, 8}
 ALLOWED_FORMATS: set[str] = {"jpg", "jpeg", "png"}
-ALLOWED_MODES: set[str] = {"fast", "ai"}
-# Output cap kept conservative for the 512MB-RAM free tier. With 4× capped at
-# the top of the supported range, a 1080p input lands at ~33MP which is well
-# under the 40MP guard. The cap still protects against pathologically large
-# inputs that would otherwise OOM-kill the worker and surface as a generic
-# "Network error" in the browser.
+# ``ai`` is kept as a backward-compatible alias for ``ai-plus``.
+ALLOWED_MODES: set[str] = {"fast", "ai-fast", "ai-plus", "anime", "ai"}
+# mode -> HF Space model key
+MODE_MODEL: dict[str, str] = {
+    "ai-fast": "x4v3",
+    "ai-plus": "x4plus",
+    "anime": "anime",
+}
+# Output cap kept conservative for the 512MB-RAM free tier.
 MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_000_000)))
-AI_MAX_INPUT_PIXELS = 4_000_000  # AI mode is CPU-only on HF free tier; keep inputs sane
+AI_MAX_INPUT_PIXELS = int(os.environ.get("PIXELBOOST_AI_MAX_INPUT_PIXELS", str(4_000_000)))
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
 # for large inputs but keep DOS protection on.
 Image.MAX_IMAGE_PIXELS = 200_000_000
@@ -96,34 +122,31 @@ Image.MAX_IMAGE_PIXELS = 200_000_000
 HF_SPACE = os.environ.get("PIXELBOOST_HF_SPACE", "").strip()
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
 
+# Shared token protection (optional). When set, upscale endpoints require it.
+SHARED_TOKEN = os.environ.get("PIXELBOOST_SHARED_TOKEN", "").strip()
+# Token for peer GPU workers (Colab notebook) to identify themselves.
+COLAB_SECRET = os.environ.get("PIXELBOOST_COLAB_SECRET", "").strip()
+
+# GG-Face style cache: disk + optional Firebase Storage mirror.
+CACHE_DIR = os.environ.get("PIXELBOOST_CACHE_DIR", os.path.join(tempfile.gettempdir(), "pixelboost-cache"))
+CACHE_MAX_BYTES = int(os.environ.get("PIXELBOOST_CACHE_MAX_BYTES", str(400 * 1024 * 1024)))
+
 _hf_client = None  # gradio_client.Client, lazily initialised
 _hf_client_created_at: float = 0.0
 _hf_client_lock = threading.Lock()
 # Re-create the gradio_client periodically. Long-lived Client instances have
-# been observed to drop their session/websocket state after extended idle,
-# which then makes subsequent .predict() calls fail with cryptic errors.
+# been observed to drop their session/websocket state after extended idle.
 HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "300"))
 
-# Async-job-queue state for AI mode. The worker is a single asyncio task
-# that pulls job ids off the queue and runs ``gradio_client.predict`` in a
-# background thread (so the HTTP event loop stays responsive to /jobs/{id}
-# polls). HF Space concurrency is 1 anyway, so a single worker matches the
-# upstream capacity.
 MAX_ACTIVE_JOBS = int(os.environ.get("PIXELBOOST_MAX_ACTIVE_JOBS", "32"))
 JOB_TTL_SECONDS = float(os.environ.get("PIXELBOOST_JOB_TTL", "600"))
 MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(20 * 1024 * 1024)))
+AI_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_AI_JOB_INPUT_BYTES", str(12 * 1024 * 1024)))
 
 JobStatus = Literal["queued", "running", "done", "error"]
+Scale = Literal[2, 3, 4, 6, 8]
 
-
-Scale = Literal[2, 4, 6]
-Format = Literal["jpg", "jpeg", "png"]
-Mode = Literal["fast", "ai"]
-
-# Build/deploy identifiers exposed at /version so we can tell at a glance
-# whether the live service is on a stale commit. Render auto-injects
-# ``RENDER_GIT_COMMIT`` for autodeployed services; other hosts can pass
-# ``GIT_COMMIT`` explicitly via the Dockerfile / deploy config.
+# Build/deploy identifiers exposed at /version.
 GIT_COMMIT = (
     os.environ.get("RENDER_GIT_COMMIT")
     or os.environ.get("GIT_COMMIT")
@@ -135,22 +158,14 @@ GIT_BRANCH = os.environ.get("RENDER_GIT_BRANCH") or os.environ.get("GIT_BRANCH")
 
 @dataclass(slots=True)
 class UpscaleResult:
-    """In-memory result of one upscale operation."""
-
     filename: str
     content_type: str
     data: bytes
+    from_cache: bool = False
 
 
 @dataclass
 class AiJob:
-    """Server-side state for one async AI upscale request.
-
-    The ``file_bytes`` field is cleared once the worker has finished with the
-    input so completed/errored jobs don't keep multi-MB blobs alive past
-    their useful life.
-    """
-
     id: str
     status: JobStatus
     progress: float
@@ -158,6 +173,8 @@ class AiJob:
     scale: int
     fmt: str
     quality: int
+    mode: str
+    face: bool = False
     created_at: float
     file_bytes: bytes = b""
     started_at: float | None = None
@@ -172,6 +189,233 @@ _jobs: dict[str, AiJob] = {}
 _jobs_lock = threading.Lock()
 _jobs_queue: asyncio.Queue[str] | None = None
 _jobs_worker_task: asyncio.Task[None] | None = None
+
+# ---------------------------------------------------------------------------
+# Shared-token + naive per-IP rate limiter (free-tier abuse protection)
+# ---------------------------------------------------------------------------
+
+_hit_counts: dict[str, list[float]] = {}
+_hit_lock = threading.Lock()
+AI_RATE_LIMIT_PER_MIN = int(os.environ.get("PIXELBOOST_AI_RATE_LIMIT", "10"))
+
+
+def _require_token(token: str | None) -> None:
+    if not SHARED_TOKEN:
+        return
+    provided = token if token is not None else ""
+    if provided.startswith("Bearer "):
+        provided = provided[len("Bearer ") :].strip()
+    if provided != SHARED_TOKEN:
+        raise HTTPException(status_code=401, detail="Missing or invalid access token.")
+
+
+def _rate_limit_ai(ip: str) -> None:
+    """Sliding-window per-IP limit on AI endpoints, best-effort."""
+    now = time.monotonic()
+    window = 60.0
+    with _hit_lock:
+        bucket = _hit_counts.setdefault(ip, [])
+        bucket[:] = [t for t in bucket if now - t < window]
+        if len(bucket) >= AI_RATE_LIMIT_PER_MIN:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many AI upscales from this IP. Please wait a minute.",
+            )
+        bucket.append(now)
+        if len(_hit_counts) > 10_000:
+            for key in [k for k, v in _hit_counts.items() if not v]:
+                del _hit_counts[key]
+
+
+def _client_ip(request_headers: dict[str, str]) -> str:
+    for key in ("x-forwarded-for", "x-real-ip"):
+        value = request_headers.get(key)
+        if value:
+            return value.split(",")[0].strip()
+    return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Result cache (disk LRU + optional Firebase Storage mirror)
+# ---------------------------------------------------------------------------
+
+
+def _cache_key(
+    file_bytes: bytes, mode: str, model: str, face: bool, scale: int, fmt: str, quality: int
+) -> str:
+    digest = hashlib.sha256(
+        file_bytes
+        + b"\x00"
+        + f"{mode}|{model}|{face}|{scale}|{fmt}|{quality}".encode()
+    ).hexdigest()
+    return digest
+
+
+def _ensure_cache_dir() -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _disk_cache_get(key: str, ext: str) -> bytes | None:
+    _ensure_cache_dir()
+    path = os.path.join(CACHE_DIR, f"{key}.{ext}")
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _disk_cache_set(key: str, ext: str, data: bytes) -> None:
+    _ensure_cache_dir()
+    path = os.path.join(CACHE_DIR, f"{key}.{ext}")
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+    # Opportunistic LRU-ish trim of the oldest files past the byte cap.
+    try:
+        total = 0
+        ranked: list[tuple[float, str]] = []
+        for name in os.listdir(CACHE_DIR):
+            full = os.path.join(CACHE_DIR, name)
+            try:
+                total += os.path.getsize(full)
+                ranked.append((os.path.getmtime(full), full))
+            except OSError:
+                continue
+        if total > CACHE_MAX_BYTES:
+            for _, full in sorted(ranked):
+                if total <= CACHE_MAX_BYTES:
+                    break
+                try:
+                    total -= os.path.getsize(full)
+                    os.unlink(full)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+
+def _firebase_blob_key(key: str, ext: str) -> str:
+    return f"upscale/{key}.{ext}"
+
+
+def _firebase_get(key: str, ext: str) -> bytes | None:
+    """Optional Firebase Storage read-back (best-effort)."""
+    try:
+        from google.cloud import storage  # type: ignore
+    except ImportError:
+        return None
+    creds_json = os.environ.get("FIREBASE_ADMIN_SDK_JSON", "").strip()
+    bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
+    if not creds_json or not bucket_name:
+        return None
+    try:
+        client = storage.Client.from_service_account_info(json.loads(creds_json))
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(_firebase_blob_key(key, ext))
+        data = blob.download_as_bytes()
+        _disk_cache_set(key, ext, data)
+        return data
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Firebase cache read failed: %s", exc)
+        return None
+
+
+def _firebase_set(key: str, ext: str, data: bytes) -> None:
+    try:
+        from google.cloud import storage  # type: ignore
+    except ImportError:
+        return
+    creds_json = os.environ.get("FIREBASE_ADMIN_SDK_JSON", "").strip()
+    bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
+    if not creds_json or not bucket_name:
+        return
+    try:
+        client = storage.Client.from_service_account_info(json.loads(creds_json))
+        bucket = client.bucket(bucket_name)
+        bucket.blob(_firebase_blob_key(key, ext)).upload_from_string(
+            data, content_type="application/octet-stream"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Firebase cache write failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# GPU worker registry (self-hosted Colab free GPUs)
+# ---------------------------------------------------------------------------
+
+_workers: dict[str, dict[str, object]] = {}
+_workers_lock = threading.Lock()
+WORKER_TTL_SECONDS = float(os.environ.get("PIXELBOOST_WORKER_TTL", "90"))
+
+
+def _gc_workers() -> None:
+    now = time.monotonic()
+    with _workers_lock:
+        for wid in list(_workers.keys()):
+            if now - float(_workers[wid]["last_seen"]) > WORKER_TTL_SECONDS:
+                del _workers[wid]
+
+
+def _pick_worker_for_mode(mode: str) -> str | None:
+    if not COLAB_SECRET:
+        return None
+    _gc_workers()
+    with _workers_lock:
+        for wid, worker in _workers.items():
+            if worker.get("busy"):
+                continue
+            if worker.get("mode") and worker["mode"] != mode:
+                continue
+            return str(worker["url"])
+    return None
+
+
+def _mark_worker_busy(url: str, busy: bool) -> None:
+    with _workers_lock:
+        for worker in _workers.values():
+            if str(worker["url"]) == url:
+                worker["busy"] = busy
+
+
+def _call_colab_worker(
+    url: str, file_bytes: bytes, filename: str, scale: int, mode: str, face: bool
+) -> bytes | None:
+    """Upscale via a registered Colab GPU worker. Returns bytes or None."""
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover
+        logger.warning("httpx not installed; cannot call Colab worker")
+        return None
+
+    _mark_worker_busy(url, True)
+    try:
+        files = {
+            "file": (filename, file_bytes, "application/octet-stream"),
+        }
+        response = httpx.post(
+            f"{url.rstrip('/')}/upscale",
+            files=files,
+            data={"scale": scale, "mode": mode, "face": "1" if face else "0"},
+            timeout=300,
+        )
+        response.raise_for_status()
+        return response.content
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Colab worker %s failed: %s", url, exc)
+        return None
+    finally:
+        _mark_worker_busy(url, False)
+
+
+# ---------------------------------------------------------------------------
+# Image helpers
+# ---------------------------------------------------------------------------
 
 
 def _normalize_format(fmt: str) -> str:
@@ -198,14 +442,16 @@ def _validate_quality(quality: int) -> int:
     return quality
 
 
-def _validate_mode(mode: str) -> str:
+def _normalize_mode(mode: str) -> str:
     mode = mode.lower().strip()
-    if mode not in ALLOWED_MODES:
+    if mode == "ai":  # backward-compatible alias
+        mode = "ai-plus"
+    if mode not in {"fast", "ai-fast", "ai-plus", "anime"}:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported mode {mode!r}. Use one of {sorted(ALLOWED_MODES)}.",
+            detail=f"Unsupported mode {mode!r}. Use one of fast | ai-fast | ai-plus | anime.",
         )
-    if mode == "ai" and not HF_SPACE:
+    if mode != "fast" and not HF_SPACE:
         raise HTTPException(
             status_code=503,
             detail="AI mode is not configured on this backend (PIXELBOOST_HF_SPACE missing).",
@@ -213,12 +459,18 @@ def _validate_mode(mode: str) -> str:
     return mode
 
 
-def _output_filename(original: str, scale: int, fmt: str) -> str:
+def _model_for_mode(mode: str) -> str:
+    return MODE_MODEL.get(mode, "x4plus")
+
+
+def _output_filename(original: str, scale: int, fmt: str, mode: str = "fast") -> str:
     stem = original.rsplit("/", 1)[-1]
     if "." in stem:
         stem = stem.rsplit(".", 1)[0]
     if not stem:
         stem = "image"
+    if mode != "fast":
+        return f"{stem}_upscaled_{mode}_{scale}x.{fmt}"
     return f"{stem}_upscaled_{scale}x.{fmt}"
 
 
@@ -255,8 +507,7 @@ def _open_image(file_bytes: bytes, filename: str) -> Image.Image:
 def _enforce_output_cap(image: Image.Image, scale: int) -> tuple[int, int]:
     new_w, new_h = image.width * scale, image.height * scale
     if new_w * new_h > MAX_OUTPUT_PIXELS:
-        # Suggest the highest scale that *would* fit for this input. Gives the
-        # user something concrete to do instead of just "try smaller".
+        # Suggest the highest scale that *would* fit for this input.
         src_pixels = image.width * image.height
         suggested = None
         for s in sorted(ALLOWED_SCALES, reverse=True):
@@ -278,13 +529,7 @@ def _enforce_output_cap(image: Image.Image, scale: int) -> tuple[int, int]:
 
 
 def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
-    """Classical upscale tuned for stable quality across photos and graphics.
-
-    We resize in two passes for 4× to reduce ringing, then run a content-aware
-    finishing pass. Low-color/line-art sources get gentler sharpening and no
-    saturation lift to avoid halos and color fringing, while photos get a
-    slightly stronger local-contrast boost.
-    """
+    """Classical upscale tuned for stable quality across photos and graphics."""
     new_w, new_h = image.width * scale, image.height * scale
 
     working = image if image.mode in {"RGB", "RGBA", "L"} else image.convert("RGB")
@@ -314,17 +559,20 @@ def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
     return finished
 
 
+# ---------------------------------------------------------------------------
+# HF Space client
+# ---------------------------------------------------------------------------
+
+
 def _build_hf_client():
     try:
         from gradio_client import Client
-    except ImportError as exc:  # pragma: no cover - dependency missing
+    except ImportError as exc:
         raise HTTPException(
             status_code=503,
             detail="AI mode unavailable: gradio_client not installed.",
         ) from exc
     logger.info("Connecting to HuggingFace Space %s", HF_SPACE)
-    # The token kwarg was renamed between gradio_client releases
-    # (older: ``hf_token``, newer: ``token``). Try both for compat.
     try:
         return Client(HF_SPACE, hf_token=HF_TOKEN, verbose=False)
     except TypeError:
@@ -344,7 +592,8 @@ def _get_hf_client():
     return _hf_client
 
 
-def _upscale_ai(image: Image.Image, scale: int, filename: str) -> Image.Image:
+def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filename: str) -> Image.Image:
+    """One Space inference round-trip, with retry + model-arg fallback."""
     if image.width * image.height > AI_MAX_INPUT_PIXELS:
         raise HTTPException(
             status_code=400,
@@ -356,7 +605,6 @@ def _upscale_ai(image: Image.Image, scale: int, filename: str) -> Image.Image:
         )
 
     client = _get_hf_client()
-
     suffix = os.path.splitext(filename)[1].lower() or ".png"
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
         suffix = ".png"
@@ -369,23 +617,35 @@ def _upscale_ai(image: Image.Image, scale: int, filename: str) -> Image.Image:
     try:
         try:
             from gradio_client import handle_file
-        except ImportError:  # pragma: no cover - older gradio_client
+        except ImportError:  # pragma: no cover
             handle_file = lambda p: p  # type: ignore[assignment]
 
-        # Free HF Spaces sometimes return intermittent upstream read timeouts
-        # during queue polling, especially around cold-starts. Retry once with
-        # a fresh gradio client before surfacing an error to users.
         attempts = 2
         last_exc: Exception | None = None
         result_path = None
         for attempt in range(1, attempts + 1):
             current_client = client if attempt == 1 else _build_hf_client()
             try:
-                result_path = current_client.predict(
-                    image=handle_file(tmp_path),
-                    scale=int(scale),
-                    api_name="/upscale",
-                )
+                kwargs: dict[str, object] = {"image": handle_file(tmp_path), "scale": int(scale)}
+                try:
+                    # New Space API surface (model + face params).
+                    kwargs["model"] = model
+                    kwargs["face"] = face
+                    result_path = current_client.predict(
+                        **kwargs,
+                        api_name="/upscale",
+                    )
+                except (TypeError, ValueError) as exc:
+                    msg = str(exc).lower()
+                    if "unexpected keyword" in msg or "unknown" in msg or "api_name" in msg:
+                        # Older Space deployed without model/face inputs.
+                        result_path = current_client.predict(
+                            image=handle_file(tmp_path),
+                            scale=int(scale),
+                            api_name="/upscale",
+                        )
+                    else:
+                        raise
                 if attempt > 1:
                     global _hf_client, _hf_client_created_at
                     with _hf_client_lock:
@@ -440,26 +700,74 @@ def _upscale_ai(image: Image.Image, scale: int, filename: str) -> Image.Image:
     return result_img
 
 
+def _upscale_ai(image: Image.Image, scale: int, mode: str, filename: str, face: bool = False) -> Image.Image:
+    """AI upscale with GPU-worker routing and 8x chain support."""
+    model = _model_for_mode(mode)
+
+    # Prefer a registered GPU worker (Colab T4) when one is healthy.
+    worker_url = _pick_worker_for_mode(mode)
+    if worker_url:
+        buf = io.BytesIO()
+        (image if image.mode in {"RGB", "RGBA"} else image.convert("RGB")).save(buf, format="PNG")
+        data = _call_colab_worker(worker_url, buf.getvalue(), filename, scale, mode, face)
+        if data is not None:
+            try:
+                result_img = Image.open(io.BytesIO(data))
+                result_img.load()
+                return result_img
+            except (UnidentifiedImageError, OSError):
+                logger.warning("Colab worker returned unreadable bytes; falling back to HF Space.")
+
+    if scale == 8:
+        # Chain: native 4x pass, then a second 4x pass + 2x resize when the
+        # intermediate fits the Space input cap (tiny sources only).
+        once = _call_hf_space(image, 4, model, False, filename)
+        if once.width * once.height <= AI_MAX_INPUT_PIXELS:
+            return _call_hf_space(once, 2, model, face, filename)
+        return once
+    return _call_hf_space(image, scale, model, face, filename)
+
+
 def _upscale_image(
     file_bytes: bytes,
     filename: str,
     scale: int,
     fmt: str,
     quality: int,
-    mode: str = "fast",
+    mode: str,
+    face: bool = False,
 ) -> UpscaleResult:
     image = _open_image(file_bytes, filename)
     _enforce_output_cap(image, scale)
 
-    if mode == "ai":
-        finished = _upscale_ai(image, scale, filename)
-    else:
+    model = _model_for_mode(mode)
+    key = _cache_key(file_bytes, mode, model, face, scale, fmt, quality)
+    ext = "jpg" if fmt == "jpg" else "png"
+
+    cached = _disk_cache_get(key, ext)
+    if cached is None:
+        cached = _firebase_get(key, ext)
+    if cached is not None:
+        content_type = "image/jpeg" if fmt == "jpg" else "image/png"
+        return UpscaleResult(
+            filename=_output_filename(filename, scale, fmt, mode),
+            content_type=content_type,
+            data=cached,
+            from_cache=True,
+        )
+
+    if mode == "fast":
         finished = _upscale_fast(image, scale)
+    else:
+        finished = _upscale_ai(image, scale, mode, filename, face)
 
     data = _encode(finished, fmt, quality)
+    _disk_cache_set(key, ext, data)
+    _firebase_set(key, ext, data)
+
     content_type = "image/jpeg" if fmt == "jpg" else "image/png"
     return UpscaleResult(
-        filename=_output_filename(filename, scale, fmt),
+        filename=_output_filename(filename, scale, fmt, mode),
         content_type=content_type,
         data=data,
     )
@@ -500,8 +808,6 @@ async def _jobs_worker_loop() -> None:
             job.started_at = time.monotonic()
             job.progress = 0.1
         try:
-            # ``gradio_client.predict`` is blocking; offload to a thread so the
-            # event loop continues to service /jobs/{id} polls and /healthz.
             result = await asyncio.to_thread(
                 _upscale_image,
                 job.file_bytes,
@@ -509,7 +815,8 @@ async def _jobs_worker_loop() -> None:
                 job.scale,
                 job.fmt,
                 job.quality,
-                "ai",
+                job.mode,
+                job.face,
             )
             with _jobs_lock:
                 job.status = "done"
@@ -543,11 +850,6 @@ async def _jobs_worker_loop() -> None:
 
 
 def _gc_jobs() -> None:
-    """Drop completed/errored jobs older than ``JOB_TTL_SECONDS``.
-
-    Called opportunistically on each /jobs/{id} read so we don't need a
-    separate timer task. Active (queued/running) jobs are never collected.
-    """
     now = time.monotonic()
     with _jobs_lock:
         for jid in list(_jobs.keys()):
@@ -567,6 +869,7 @@ def _serialize_job(job: AiJob) -> dict[str, object]:
         "progress": round(job.progress, 4),
         "scale": job.scale,
         "format": job.fmt,
+        "mode": job.mode,
         "filename": job.filename,
     }
     if job.error is not None:
@@ -579,6 +882,27 @@ def _serialize_job(job: AiJob) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
+# Keep-alive / warm helpers
+# ---------------------------------------------------------------------------
+
+_warm_lock = threading.Lock()
+_warm_in_progress = False
+
+
+def _warm_ai_worker() -> None:
+    global _warm_in_progress
+    try:
+        logger.info("warm-ai: sending a tiny probe to the HF Space...")
+        probe = Image.new("RGB", (64, 64), (128, 128, 128))
+        _upscale_ai(probe, 2, "ai-fast", "warm-probe.png")
+        logger.info("warm-ai: probe completed, Space is warm.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("warm-ai probe failed: %s", exc)
+    finally:
+        _warm_in_progress = False
+
+
+# ---------------------------------------------------------------------------
 # HTTP endpoints
 # ---------------------------------------------------------------------------
 
@@ -587,23 +911,33 @@ def _serialize_job(job: AiJob) -> dict[str, object]:
 def healthz() -> dict[str, str | bool | int]:
     with _jobs_lock:
         active = _count_active_jobs_locked()
-    return {"status": "ok", "ai_available": bool(HF_SPACE), "ai_jobs_active": active}
+    with _workers_lock:
+        workers = len(_workers)
+    return {"status": "ok", "ai_available": bool(HF_SPACE), "ai_jobs_active": active, "gpu_workers": workers}
+
+
+@app.get("/warm-ai")
+def warm_ai() -> dict[str, object]:
+    """Keep-alive hook for cron (GitHub Actions). Wakes Render and pokes the
+    HF Space with a tiny probe so real requests don't hit cold starts."""
+    if not HF_SPACE:
+        return {"status": "ok", "note": "no AI space configured"}
+    global _warm_in_progress
+    with _warm_lock:
+        if _warm_in_progress:
+            return {"status": "already_warming"}
+        _warm_in_progress = True
+    threading.Thread(target=_warm_ai_worker, daemon=True).start()
+    return {"status": "warming_started"}
 
 
 @app.get("/version")
 def version() -> dict[str, object]:
-    """Identify what's actually deployed.
-
-    Returns the git commit/branch the running container was built from plus
-    the feature surface (supported scales, modes, AI availability). Makes
-    deploy drift (live service older than ``main``) obvious without having
-    to probe individual endpoints.
-    """
     return {
         "git_commit": GIT_COMMIT,
         "git_branch": GIT_BRANCH,
         "scales": sorted(ALLOWED_SCALES),
-        "modes": sorted(ALLOWED_MODES),
+        "modes": ["fast", "ai-fast", "ai-plus", "anime"],
         "ai_available": bool(HF_SPACE),
         "max_output_pixels": MAX_OUTPUT_PIXELS,
         "ai_max_input_pixels": AI_MAX_INPUT_PIXELS,
@@ -618,13 +952,16 @@ def root() -> JSONResponse:
             "endpoints": [
                 "/healthz",
                 "/version",
+                "/warm-ai",
                 "/upscale",
                 "/upscale-bulk",
                 "/jobs/upscale-ai",
                 "/jobs/{id}",
                 "/jobs/{id}/result",
+                "/workers/register",
+                "/workers",
             ],
-            "modes": sorted(ALLOWED_MODES),
+            "modes": ["fast", "ai-fast", "ai-plus", "anime"],
             "scales": sorted(ALLOWED_SCALES),
             "ai_available": bool(HF_SPACE),
             "git_commit": GIT_COMMIT,
@@ -634,22 +971,29 @@ def root() -> JSONResponse:
 
 @app.post("/upscale")
 async def upscale(
+    request: Request,
     file: UploadFile = File(...),
     scale: int = Form(2),
     format: str = Form("jpg"),
     quality: int = Form(90),
     mode: str = Form("fast"),
+    face: bool = Form(False),
+    x_pixelboost_token: str | None = Header(default=None, alias="X-PixelBoost-Token"),
+    authorization: str | None = Header(default=None),
 ) -> StreamingResponse:
+    _require_token(x_pixelboost_token or authorization)
     scale = _validate_scale(scale)
     fmt = _normalize_format(format)
     quality = _validate_quality(quality)
-    mode = _validate_mode(mode)
+    mode = _normalize_mode(mode)
+    if mode != "fast":
+        _rate_limit_ai(_client_ip(dict(request.headers)))
 
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty upload")
 
-    result = _upscale_image(raw, file.filename or "image", scale, fmt, quality, mode)
+    result = _upscale_image(raw, file.filename or "image", scale, fmt, quality, mode, face)
 
     return StreamingResponse(
         io.BytesIO(result.data),
@@ -658,25 +1002,33 @@ async def upscale(
             "Content-Disposition": f'attachment; filename="{result.filename}"',
             "Content-Length": str(len(result.data)),
             "X-PixelBoost-Mode": mode,
+            "X-PixelBoost-Cache": "1" if result.from_cache else "0",
         },
     )
 
 
 @app.post("/upscale-bulk")
 async def upscale_bulk(
+    request: Request,
     files: list[UploadFile] = File(...),
     scale: int = Form(2),
     format: str = Form("jpg"),
     quality: int = Form(90),
     mode: str = Form("fast"),
+    face: bool = Form(False),
+    x_pixelboost_token: str | None = Header(default=None, alias="X-PixelBoost-Token"),
+    authorization: str | None = Header(default=None),
 ) -> StreamingResponse:
+    _require_token(x_pixelboost_token or authorization)
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
     scale = _validate_scale(scale)
     fmt = _normalize_format(format)
     quality = _validate_quality(quality)
-    mode = _validate_mode(mode)
+    mode = _normalize_mode(mode)
+    if mode != "fast":
+        _rate_limit_ai(_client_ip(dict(request.headers)))
 
     archive_buffer = io.BytesIO()
     errors: list[dict[str, str]] = []
@@ -690,7 +1042,7 @@ async def upscale_bulk(
                 errors.append({"file": name, "error": "empty upload"})
                 continue
             try:
-                result = _upscale_image(raw, name, scale, fmt, quality, mode)
+                result = _upscale_image(raw, name, scale, fmt, quality, mode, face)
             except HTTPException as exc:
                 errors.append({"file": name, "error": str(exc.detail)})
                 continue
@@ -726,41 +1078,39 @@ async def upscale_bulk(
 
 @app.post("/jobs/upscale-ai", status_code=202)
 async def submit_ai_job(
+    request: Request,
     file: UploadFile = File(...),
     scale: int = Form(2),
     format: str = Form("jpg"),
     quality: int = Form(90),
+    mode: str = Form("ai-fast"),
+    face: bool = Form(False),
+    x_pixelboost_token: str | None = Header(default=None, alias="X-PixelBoost-Token"),
+    authorization: str | None = Header(default=None),
 ) -> JSONResponse:
-    """Submit an AI upscale request and return immediately with a ``job_id``.
-
-    Clients should poll ``GET /jobs/{job_id}`` until ``status`` is ``done`` or
-    ``error``, then fetch the bytes from ``GET /jobs/{job_id}/result``. This
-    decouples long-running inference from the HTTP request lifecycle, so the
-    ~100s Cloudflare/Render edge timeout no longer terminates slow AI jobs.
-    """
+    """Submit an AI upscale request and return immediately with a ``job_id``."""
+    _require_token(x_pixelboost_token or authorization)
     if _jobs_queue is None:
         raise HTTPException(status_code=503, detail="Job worker not started yet. Try again in a moment.")
 
     scale = _validate_scale(scale)
     fmt = _normalize_format(format)
     quality = _validate_quality(quality)
-    # AI mode requires HF Space; reuse _validate_mode for the 503 path.
-    _validate_mode("ai")
+    mode = _normalize_mode(mode)
+    _rate_limit_ai(_client_ip(dict(request.headers)))
 
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty upload")
-    if len(raw) > MAX_JOB_INPUT_BYTES:
+    if len(raw) > AI_JOB_INPUT_BYTES:
         raise HTTPException(
             status_code=413,
             detail=(
                 f"Image too large for async AI mode ({len(raw) // 1_000_000} MB > "
-                f"{MAX_JOB_INPUT_BYTES // 1_000_000} MB cap)."
+                f"{AI_JOB_INPUT_BYTES // 1_000_000} MB cap)."
             ),
         )
 
-    # Validate input dimensions / decode early so the client gets a fast,
-    # actionable 400 instead of a queued job that immediately errors.
     probe = _open_image(raw, file.filename or "image")
     _enforce_output_cap(probe, scale)
     if probe.width * probe.height > AI_MAX_INPUT_PIXELS:
@@ -788,6 +1138,8 @@ async def submit_ai_job(
             scale=scale,
             fmt=fmt,
             quality=quality,
+            mode=mode,
+            face=face,
             created_at=time.monotonic(),
             file_bytes=raw,
         )
@@ -833,7 +1185,57 @@ async def get_job_result(job_id: str) -> StreamingResponse:
         headers={
             "Content-Disposition": f'attachment; filename="{job.result_filename}"',
             "Content-Length": str(len(job.result_data)),
-            "X-PixelBoost-Mode": "ai",
+            "X-PixelBoost-Mode": job.mode,
             "X-PixelBoost-Job-Id": job.id,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# GPU worker registration (Colab notebook peers)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/workers/register", status_code=200)
+async def register_worker(
+    url: str = Form(...),
+    secret: str = Form(...),
+    mode: str = Form("ai-plus"),
+) -> JSONResponse:
+    """Called periodically by self-hosted Colab notebooks to announce they are
+    alive and ready to accept jobs. Workers expire after 90s without a refresh."""
+    if not COLAB_SECRET:
+        raise HTTPException(status_code=404, detail="Peer workers are not enabled on this instance.")
+    if secret != COLAB_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid worker secret.")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must be absolute.")
+    if mode not in {"ai-fast", "ai-plus", "anime"}:
+        raise HTTPException(status_code=400, detail="Worker mode must be an AI mode.")
+
+    worker_id = hashlib.sha256(url.encode()).hexdigest()[:12]
+    with _workers_lock:
+        _workers[worker_id] = {
+            "url": url,
+            "mode": mode,
+            "busy": False,
+            "last_seen": time.monotonic(),
+        }
+    return JSONResponse({"worker_id": worker_id, "registered": True, "ttl": WORKER_TTL_SECONDS})
+
+
+@app.get("/workers")
+async def list_workers() -> JSONResponse:
+    _gc_workers()
+    with _workers_lock:
+        items = [
+            {
+                "id": wid,
+                "url": w["url"],
+                "mode": w.get("mode"),
+                "busy": w.get("busy"),
+                "last_seen_seconds_ago": round(time.monotonic() - float(w["last_seen"]), 1),
+            }
+            for wid, w in sorted(_workers.items())
+        ]
+    return JSONResponse({"workers": items, "enabled": bool(COLAB_SECRET)})

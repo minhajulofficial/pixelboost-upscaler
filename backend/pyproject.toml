@@ -12,6 +12,10 @@ fastapi = {extras = ["standard"], version = "^0.136.1"}
 pillow = "^12.0"
 python-multipart = "^0.0.29"
 gradio-client = ">=1.4,<3"
+httpx = "^0.28"
+
+[tool.poetry.extras]
+cache = ["google-cloud-storage>=2.18"]
 
 [build-system]
 requires = ["poetry-core"]

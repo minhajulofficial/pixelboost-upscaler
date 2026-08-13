@@ -1,0 +1,25 @@
+name: Keep Alive
+
+# Free-tier Render web services sleep after ~15 min of inactivity and
+# HuggingFace Spaces go cold after idle. This workflow pings /healthz every
+# 10 minutes (wakes the Render instance) and /warm-ai (which sends a tiny
+# probe to the HF Space so the Real-ESRGAN model stays loaded). Result: real
+# user requests skip the 20-60s cold starts.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake Render instance
+        run: |
+          curl -sf --max-time 30 -o /dev/null -w "healthz: %{http_code} in %{time_total}s\n" \
+            https://pixelboost-backend-q659.onrender.com/healthz || echo "healthz unreachable"
+      - name: Warm AI Space
+        run: |
+          curl -sf --max-time 40 -o /dev/null -w "warm-ai: %{http_code} in %{time_total}s\n" \
+            https://pixelboost-backend-q659.onrender.com/warm-ai || echo "warm-ai unreachable"
