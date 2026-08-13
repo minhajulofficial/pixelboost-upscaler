@@ -79,6 +79,9 @@ function parseApi(raw: string): { base: string; authHeader: string | null } {
 const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
+// Shared abuse-protection token for the backend (optional). Set VITE_PIXELBOOST_TOKEN
+// at build time on the deploy host; requests then carry X-PixelBoost-Token.
+const PIXELBOOST_TOKEN = import.meta.env.VITE_PIXELBOOST_TOKEN?.trim() ?? "";
 const SCALE_OPTIONS: Scale[] = [2, 3, 4, 6, 8];
 // Used when the backend's GET / response doesn't include a `scales` field
 // (older deploys, or any future host that strips the body) — keep the UI
@@ -197,6 +200,7 @@ function upscaleSyncRequest(
     xhr.responseType = "blob";
     xhr.timeout = REQUEST_TIMEOUT_MS[settings.mode];
     if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
+    if (PIXELBOOST_TOKEN) xhr.setRequestHeader("X-PixelBoost-Token", PIXELBOOST_TOKEN);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -297,6 +301,7 @@ function submitAiJob(
     onStatus("Submitting AI job…");
     xhr.timeout = REQUEST_TIMEOUT_MS[settings.mode];
     if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
+    if (PIXELBOOST_TOKEN) xhr.setRequestHeader("X-PixelBoost-Token", PIXELBOOST_TOKEN);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -369,6 +374,7 @@ async function pollAiJob(
     try {
       const headers: HeadersInit = {};
       if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+      if (PIXELBOOST_TOKEN) headers["X-PixelBoost-Token"] = PIXELBOOST_TOKEN;
       const res = await fetch(`${API_URL}/jobs/${jobId}`, { signal, headers });
       if (res.status === 404) {
         throw new NonRetryableError(
@@ -398,6 +404,7 @@ async function pollAiJob(
       onProgress(0.95);
       const headers: HeadersInit = {};
       if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+      if (PIXELBOOST_TOKEN) headers["X-PixelBoost-Token"] = PIXELBOOST_TOKEN;
       const resultRes = await fetch(`${API_URL}/jobs/${jobId}/result`, { signal, headers });
       if (!resultRes.ok) {
         throw new Error(`Could not fetch AI result: HTTP ${resultRes.status}`);
@@ -659,6 +666,7 @@ export default function App() {
       try {
         const headers: HeadersInit = {};
         if (AUTH_HEADER) headers.Authorization = AUTH_HEADER;
+        if (PIXELBOOST_TOKEN) headers["X-PixelBoost-Token"] = PIXELBOOST_TOKEN;
         const res = await fetch(`${API_URL}/`, { headers });
         if (!res.ok) return;
         const data = (await res.json()) as ApiRootPayload;
