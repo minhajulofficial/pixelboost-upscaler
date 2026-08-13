@@ -23,15 +23,16 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-type Scale = 2 | 4 | 6;
+type Scale = 2 | 3 | 4 | 6 | 8;
 type Format = "jpg" | "png";
-type Mode = "fast" | "ai";
+type Mode = "fast" | "ai-fast" | "ai-plus" | "anime";
 
 interface Settings {
   scale: Scale;
   format: Format;
   quality: number;
   mode: Mode;
+  face: boolean;
 }
 
 interface Dimensions {
@@ -78,18 +79,33 @@ function parseApi(raw: string): { base: string; authHeader: string | null } {
 const { base: API_URL, authHeader: AUTH_HEADER } = parseApi(
   import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 );
-const SCALE_OPTIONS: Scale[] = [2, 4, 6];
+const SCALE_OPTIONS: Scale[] = [2, 3, 4, 6, 8];
 // Used when the backend's GET / response doesn't include a `scales` field
 // (older deploys, or any future host that strips the body) — keep the UI
-// to the always-supported core scales so 6× buttons can't fail.
+// to the always-supported core scales so 6×/8× buttons can't fail.
 const FALLBACK_SCALES: Scale[] = [2, 4];
 const FORMAT_OPTIONS: Format[] = ["jpg", "png"];
 
-// Per-mode XHR timeouts. Fast mode is one synchronous request; AI mode is a
+const MODE_OPTIONS: { id: Mode; label: string; hint: string }[] = [
+  { id: "fast", label: "Fast", hint: "Pillow LANCZOS — instant classical resize with mild sharpening" },
+  { id: "ai-fast", label: "AI Fast", hint: "Real-ESRGAN x4v3 — detail recovery, ~15–40 s" },
+  { id: "ai-plus", label: "AI Plus", hint: "RealESRGAN x4plus — best quality, slower (~30–90 s)" },
+  { id: "anime", label: "Anime", hint: "RealESRGAN x4plus_anime_6B — illustrations & line art" },
+];
+
+const ModesDesc: Record<Exclude<Mode, "fast">, string> = {
+  "ai-fast": "AI Fast runs Real-ESRGAN x4v3 on a free HuggingFace Space. Expect ~15–40 s per image plus a possible ~30 s cold start.",
+  "ai-plus": "AI Plus runs RealESRGAN x4plus on the Space — the best quality model but slower (~30–90 s). A ~30 s cold start may add on top.",
+  anime: "Anime runs RealESRGAN x4plus_anime_6B, tuned for illustrations and line art. Expect AI timings plus a possible ~30 s cold start.",
+};
+
+// Per-mode XHR timeouts. Fast mode is one synchronous request; AI modes are a
 // short *submit* request followed by polling — see submitAiJob / pollAiJob.
 const REQUEST_TIMEOUT_MS: Record<Mode, number> = {
   fast: 45_000,
-  ai: 45_000,
+  "ai-fast": 45_000,
+  "ai-plus": 45_000,
+  anime: 45_000,
 };
 const MAX_RETRIES = 2;
 const RETRY_BACKOFF_MS = [4_000, 12_000];
@@ -244,7 +260,7 @@ function upscaleSyncRequest(
     xhr.ontimeout = () =>
       reject(
         new Error(
-          settings.mode === "ai"
+          settings.mode !== "fast"
             ? "AI upscale took longer than the network allows. The HF Space may be cold-starting."
             : "Request timed out.",
         ),
@@ -259,6 +275,7 @@ function upscaleSyncRequest(
     form.append("format", settings.format);
     form.append("quality", String(settings.quality));
     form.append("mode", settings.mode);
+    if (settings.face) form.append("face", "1");
     xhr.send(form);
   });
 }
@@ -278,7 +295,7 @@ function submitAiJob(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}/jobs/upscale-ai`, true);
     onStatus("Submitting AI job…");
-    xhr.timeout = REQUEST_TIMEOUT_MS.ai;
+    xhr.timeout = REQUEST_TIMEOUT_MS[settings.mode];
     if (AUTH_HEADER) xhr.setRequestHeader("Authorization", AUTH_HEADER);
 
     xhr.upload.onprogress = (event) => {
@@ -326,6 +343,8 @@ function submitAiJob(
     form.append("scale", String(settings.scale));
     form.append("format", settings.format);
     form.append("quality", String(settings.quality));
+    form.append("mode", settings.mode);
+    if (settings.face) form.append("face", "1");
     xhr.send(form);
   });
 }
@@ -429,7 +448,7 @@ function upscaleRequest(
   onStatus: (message: string) => void,
   signal: AbortSignal,
 ): Promise<UpscaleApiResult> {
-  if (settings.mode === "ai") {
+  if (settings.mode !== "fast") {
     return upscaleAiAsync(file, settings, onProgress, onStatus, signal);
   }
   return upscaleSyncRequest(file, settings, onProgress, signal);
@@ -608,6 +627,7 @@ export default function App() {
     format: "jpg",
     quality: 90,
     mode: "fast",
+    face: false,
   });
   const [availableScales, setAvailableScales] = useState<Scale[]>(SCALE_OPTIONS);
   const [isDragging, setIsDragging] = useState(false);
@@ -643,7 +663,7 @@ export default function App() {
         if (!res.ok) return;
         const data = (await res.json()) as ApiRootPayload;
         const fromApi = (data.scales ?? [])
-          .filter((s): s is Scale => s === 2 || s === 4 || s === 6)
+          .filter((s): s is Scale => s === 2 || s === 3 || s === 4 || s === 6 || s === 8)
           .sort((a, b) => a - b);
         const safe = fromApi.length > 0 ? fromApi : FALLBACK_SCALES;
         if (!active) return;
@@ -726,7 +746,7 @@ export default function App() {
       const controller = abortRef.current ?? new AbortController();
       if (!abortRef.current) abortRef.current = controller;
 
-      updateItem(id, { status: "processing", progress: 0, error: undefined, uiMessage: settings.mode === "ai" ? "Preparing AI request…" : undefined });
+      updateItem(id, { status: "processing", progress: 0, error: undefined, uiMessage: settings.mode !== "fast" ? "Preparing AI request…" : undefined });
       try {
         const { blob } = await upscaleWithRetry(
           target.file,
@@ -768,7 +788,7 @@ export default function App() {
           error:
             err instanceof Error
               ? err.message.includes("Unsupported scale")
-                ? `${err.message} This backend is on an older version. Deploy latest backend to use 6×.`
+                ? `${err.message} This backend is on an older version. Deploy latest backend to use this scale.`
                 : err.message
               : "Unknown error",
         });
@@ -868,7 +888,7 @@ export default function App() {
             </h1>
           </div>
           <p className="max-w-xl text-sm text-violet-100/85 sm:text-base">
-            Free unlimited image upscaler. Boost JPG and PNG up to 6× — all processing happens
+            Free unlimited image upscaler. Boost JPG and PNG up to 8× — all processing happens
             on our servers so your phone doesn&apos;t break a sweat.
           </p>
         </div>
@@ -1019,47 +1039,55 @@ export default function App() {
           </div>
 
           <div className="mt-4 flex flex-wrap items-start gap-3 border-t border-gray-800 pt-4">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-                Engine
+                Mode
               </span>
-              <div className="flex rounded-full bg-gray-800 p-1">
-                <button
-                  type="button"
-                  onClick={() => setSettings((prev) => ({ ...prev, mode: "fast" }))}
-                  className={`min-h-[36px] rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
-                    settings.mode === "fast"
-                      ? "bg-purple-600 text-white shadow-md shadow-purple-900/40"
-                      : "text-gray-300 hover:text-white"
-                  }`}
-                  aria-pressed={settings.mode === "fast"}
-                  title="Pillow LANCZOS — instant, classical resize with mild sharpening"
-                >
-                  Fast
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSettings((prev) => ({ ...prev, mode: "ai" }))}
-                  className={`min-h-[36px] inline-flex items-center gap-1 rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
-                    settings.mode === "ai"
-                      ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-md shadow-fuchsia-900/40"
-                      : "text-gray-300 hover:text-white"
-                  }`}
-                  aria-pressed={settings.mode === "ai"}
-                  title="Real-ESRGAN on HuggingFace Spaces — slower (20–90s) but real detail recovery"
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  AI Enhance
-                </button>
+              <div className="flex flex-wrap rounded-full bg-gray-800 p-1">
+                {MODE_OPTIONS.map((opt) => {
+                  const active = settings.mode === opt.id;
+                  const isAi = opt.id !== "fast";
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setSettings((prev) => ({ ...prev, mode: opt.id }))}
+                      className={`min-h-[36px] inline-flex items-center gap-1.5 rounded-full px-3 text-sm font-semibold transition-all duration-200 ${
+                        active
+                          ? isAi
+                            ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-md shadow-fuchsia-900/40"
+                            : "bg-purple-600 text-white shadow-md shadow-purple-900/40"
+                          : "text-gray-300 hover:text-white"
+                      }`}
+                      aria-pressed={active}
+                      title={opt.hint}
+                    >
+                      {isAi && active && <Sparkles className="h-3.5 w-3.5" />}
+                      {opt.label}
+                    </button>
+                  );
+                })}
               </div>
+              {settings.mode !== "fast" && (
+                <label
+                  className="inline-flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none"
+                  title="Runs a CPU-safe face-refine pass (Haar detection + CLAHE/unsharp) after upscaling"
+                >
+                  <input
+                    type="checkbox"
+                    checked={settings.face}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, face: e.target.checked }))}
+                    className="h-3.5 w-3.5 accent-fuchsia-500"
+                  />
+                  Face refine
+                </label>
+              )}
             </div>
-            {settings.mode === "ai" && (
-              <p className="flex-1 min-w-[220px] text-xs text-fuchsia-200/80">
-                AI mode runs Real-ESRGAN on a free HuggingFace Space.
-                Expect 20–90 seconds per image and a possible ~30s cold start
-                if the Space is asleep.
-              </p>
-            )}
+            <p className="flex-1 min-w-[220px] text-xs text-fuchsia-200/80">
+              {settings.mode === "fast"
+                ? "Fast runs Pillow LANCZOS on the backend — instant, classical resize with mild sharpening."
+                : ModesDesc[settings.mode]}
+            </p>
           </div>
         </section>
 
