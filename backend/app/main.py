@@ -174,8 +174,8 @@ class AiJob:
     fmt: str
     quality: int
     mode: str
-    face: bool = False
     created_at: float
+    face: bool = False
     file_bytes: bytes = b""
     started_at: float | None = None
     finished_at: float | None = None

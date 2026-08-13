@@ -14,7 +14,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml poetry.lock* ./
+# Lock file was intentionally dropped (pyproject grew new deps and poetry is
+# not available in CI to regenerate it) — poetry resolves and writes a fresh
+# lock at build time.
+COPY pyproject.toml ./
 RUN poetry install --no-root --only main
 
 COPY app ./app
