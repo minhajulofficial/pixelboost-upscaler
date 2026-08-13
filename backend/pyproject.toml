@@ -15,7 +15,7 @@ gradio-client = ">=1.4,<3"
 httpx = "^0.28"
 
 [tool.poetry.extras]
-cache = ["google-cloud-storage>=2.18"]
+cache = ["google-cloud-storage"]
 
 [build-system]
 requires = ["poetry-core"]
