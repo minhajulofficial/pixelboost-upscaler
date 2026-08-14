@@ -703,7 +703,13 @@ def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filen
 
 
 def _upscale_ai(image: Image.Image, scale: int, mode: str, filename: str, face: bool = False) -> Image.Image:
-    """AI upscale with GPU-worker routing and 8x chain support."""
+    """AI upscale with GPU-worker routing.
+
+    The Space natively upscales 4x then resizes to any requested scale
+    (2/3/4/6/8), so a single call covers every scale. (An earlier two-pass
+    chain for 8x silently returned a 4x image whenever the 4x intermediate
+    exceeded the Space input cap.)
+    """
     model = _model_for_mode(mode)
 
     # Prefer a registered GPU worker (Colab T4) when one is healthy.
@@ -720,13 +726,6 @@ def _upscale_ai(image: Image.Image, scale: int, mode: str, filename: str, face: 
             except (UnidentifiedImageError, OSError):
                 logger.warning("Colab worker returned unreadable bytes; falling back to HF Space.")
 
-    if scale == 8:
-        # Chain: native 4x pass, then a second 4x pass + 2x resize when the
-        # intermediate fits the Space input cap (tiny sources only).
-        once = _call_hf_space(image, 4, model, False, filename)
-        if once.width * once.height <= AI_MAX_INPUT_PIXELS:
-            return _call_hf_space(once, 2, model, face, filename)
-        return once
     return _call_hf_space(image, scale, model, face, filename)
 
 
@@ -896,7 +895,8 @@ def _warm_ai_worker() -> None:
     try:
         logger.info("warm-ai: sending a tiny probe to the HF Space...")
         probe = Image.new("RGB", (64, 64), (128, 128, 128))
-        _upscale_ai(probe, 2, "ai-fast", "warm-probe.png")
+        for warm_mode in ("ai-fast", "ai-plus", "anime"):
+            _upscale_ai(probe, 2, warm_mode, "warm-probe.png")
         logger.info("warm-ai: probe completed, Space is warm.")
     except Exception as exc:  # noqa: BLE001
         logger.warning("warm-ai probe failed: %s", exc)
