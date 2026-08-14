@@ -118,8 +118,10 @@ MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_00
 AI_MAX_INPUT_PIXELS = int(os.environ.get("PIXELBOOST_AI_MAX_INPUT_PIXELS", str(4_000_000)))
 # Hard cap for one Space inference round-trip. gradio_client.predict has no
 # built-in timeout, so a stale session or a hung Space call would otherwise
-# block the single AI job worker forever and jam the whole queue.
-AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "480"))
+# block the single AI job worker forever and jam the whole queue. 300s is
+# comfortably above the slowest legitimate job (x4plus on a near-2.5MP input),
+# while still letting the worker recover quickly from dead sessions.
+AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "300"))
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
 # for large inputs but keep DOS protection on.
 Image.MAX_IMAGE_PIXELS = 200_000_000
@@ -679,6 +681,12 @@ def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filen
                         _hf_client_created_at = time.monotonic()
                 break
             except Exception as exc:  # noqa: BLE001
+                # A hard timeout means the session is dead/stalled — retrying
+                # with a fresh client would just burn another full timeout.
+                # Fail fast so the job worker can move on to the next job.
+                if isinstance(exc, HTTPException) and exc.status_code == 504:
+                    logger.exception("HF Space call timed out for %s", filename)
+                    raise
                 last_exc = exc
                 message = str(exc).lower()
                 retryable = any(
