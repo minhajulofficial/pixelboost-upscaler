@@ -50,6 +50,7 @@ Protection & stability:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import io
 import json
@@ -115,6 +116,10 @@ MODE_MODEL: dict[str, str] = {
 # Output cap kept conservative for the 512MB-RAM free tier.
 MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_000_000)))
 AI_MAX_INPUT_PIXELS = int(os.environ.get("PIXELBOOST_AI_MAX_INPUT_PIXELS", str(4_000_000)))
+# Hard cap for one Space inference round-trip. gradio_client.predict has no
+# built-in timeout, so a stale session or a hung Space call would otherwise
+# block the single AI job worker forever and jam the whole queue.
+AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "480"))
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
 # for large inputs but keep DOS protection on.
 Image.MAX_IMAGE_PIXELS = 200_000_000
@@ -137,6 +142,9 @@ _hf_client_lock = threading.Lock()
 # Re-create the gradio_client periodically. Long-lived Client instances have
 # been observed to drop their session/websocket state after extended idle.
 HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "300"))
+
+# Pool for wrapping gradio_client.predict calls with a hard timeout.
+_predict_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 MAX_ACTIVE_JOBS = int(os.environ.get("PIXELBOOST_MAX_ACTIVE_JOBS", "32"))
 JOB_TTL_SECONDS = float(os.environ.get("PIXELBOOST_JOB_TTL", "600"))
@@ -623,6 +631,26 @@ def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filen
         attempts = 2
         last_exc: Exception | None = None
         result_path = None
+
+        def _predict_with_timeout(**kwargs):
+            fut = _predict_pool.submit(
+                lambda cl=current_client: cl.predict(**kwargs, api_name="/upscale")
+            )
+            fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+            try:
+                return fut.result(timeout=AI_CALL_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError:
+                # Can't kill the orphaned thread; make sure the next call uses a
+                # fresh client (the current one likely holds a dead session).
+                global _hf_client, _hf_client_created_at
+                with _hf_client_lock:
+                    _hf_client = None
+                    _hf_client_created_at = 0.0
+                raise HTTPException(
+                    status_code=504,
+                    detail="AI upscaling timed out waiting for the HF Space.",
+                )
+
         for attempt in range(1, attempts + 1):
             current_client = client if attempt == 1 else _build_hf_client()
             try:
@@ -631,20 +659,16 @@ def _call_hf_space(image: Image.Image, scale: int, model: str, face: bool, filen
                     # New Space API surface (model + face params).
                     kwargs["model"] = model
                     kwargs["face"] = face
-                    result_path = current_client.predict(
-                        **kwargs,
-                        api_name="/upscale",
-                    )
+                    result_path = _predict_with_timeout(**kwargs)
                 except (TypeError, ValueError, KeyError) as exc:
                     msg = str(exc).lower()
                     # Older Space deployed without model/face inputs rejects
                     # unknown params with a message like "not defined in the
                     # endpoint's input" or "unknown parameter".
                     if any(t in msg for t in ("unexpected keyword", "unknown", "not defined", "not a valid input", "key-word argument", "keyword argument")):
-                        result_path = current_client.predict(
+                        result_path = _predict_with_timeout(
                             image=handle_file(tmp_path),
                             scale=int(scale),
-                            api_name="/upscale",
                         )
                     else:
                         raise
