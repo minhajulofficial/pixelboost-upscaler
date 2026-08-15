@@ -144,12 +144,17 @@ _hf_client_lock = threading.Lock()
 # Re-create the gradio_client periodically. Long-lived Client instances have
 # been observed to drop their session/websocket state after extended idle.
 HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "300"))
+# Hard cap for the Client() constructor (config fetch).
+HF_BUILD_TIMEOUT_SECONDS = float(os.environ.get("PIXELBOOST_HF_BUILD_TIMEOUT", "30"))
 
 # Pool for wrapping gradio_client.predict calls with a hard timeout.
-_predict_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+_predict_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 MAX_ACTIVE_JOBS = int(os.environ.get("PIXELBOOST_MAX_ACTIVE_JOBS", "32"))
 JOB_TTL_SECONDS = float(os.environ.get("PIXELBOOST_JOB_TTL", "600"))
+# Hard deadline for one AI job (queued + running). Kept under the frontend's
+# 10-minute poll so users get a clear error instead of a silent hang.
+JOB_DEADLINE_SECONDS = float(os.environ.get("PIXELBOOST_JOB_DEADLINE", "540"))
 MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(20 * 1024 * 1024)))
 AI_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_AI_JOB_INPUT_BYTES", str(12 * 1024 * 1024)))
 
@@ -574,7 +579,7 @@ def _upscale_fast(image: Image.Image, scale: int) -> Image.Image:
 # ---------------------------------------------------------------------------
 
 
-def _build_hf_client():
+def _build_hf_client_inner():
     try:
         from gradio_client import Client
     except ImportError as exc:
@@ -587,6 +592,21 @@ def _build_hf_client():
         return Client(HF_SPACE, hf_token=HF_TOKEN, verbose=False)
     except TypeError:
         return Client(HF_SPACE, token=HF_TOKEN, verbose=False)
+
+
+def _build_hf_client():
+    # Bound the Client() constructor: it fetches the Space config with no
+    # built-in timeout, so a stalled connection would otherwise hang forever
+    # while holding _hf_client_lock and block every AI job behind it.
+    fut = _predict_pool.submit(_build_hf_client_inner)
+    fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+    try:
+        return fut.result(timeout=HF_BUILD_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="AI mode unavailable: connecting to the HF Space timed out.",
+        )
 
 
 def _get_hf_client():
@@ -829,6 +849,50 @@ async def _stop_jobs_worker() -> None:
     _jobs_worker_task = None
 
 
+def _run_job(job_id: str, job: AiJob) -> None:
+    """Run one AI job on its own thread. The worker loop watches it and
+    force-fails it after JOB_DEADLINE_SECONDS so a hung Space call / client
+    build can never block the whole queue. The orphan thread keeps running
+    (daemon) until its own call errors out; its result is discarded."""
+    try:
+        result = _upscale_image(
+            job.file_bytes,
+            job.filename,
+            job.scale,
+            job.fmt,
+            job.quality,
+            job.mode,
+            job.face,
+        )
+        with _jobs_lock:
+            if job.status != "running":
+                return  # already force-failed by the deadline
+            job.status = "done"
+            job.progress = 1.0
+            job.finished_at = time.monotonic()
+            job.result_filename = result.filename
+            job.result_content_type = result.content_type
+            job.result_data = result.data
+            job.file_bytes = b""  # free RAM
+    except HTTPException as exc:
+        with _jobs_lock:
+            if job.status != "running":
+                return
+            job.status = "error"
+            job.error = str(exc.detail)
+            job.finished_at = time.monotonic()
+            job.file_bytes = b""
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("AI job %s failed", job_id)
+        with _jobs_lock:
+            if job.status != "running":
+                return
+            job.status = "error"
+            job.error = str(exc) or "Unknown error"
+            job.finished_at = time.monotonic()
+            job.file_bytes = b""
+
+
 async def _jobs_worker_loop() -> None:
     assert _jobs_queue is not None
     while True:
@@ -840,46 +904,29 @@ async def _jobs_worker_loop() -> None:
             job.status = "running"
             job.started_at = time.monotonic()
             job.progress = 0.1
-        try:
-            result = await asyncio.to_thread(
-                _upscale_image,
-                job.file_bytes,
-                job.filename,
-                job.scale,
-                job.fmt,
-                job.quality,
-                job.mode,
-                job.face,
-            )
+
+        worker = threading.Thread(target=_run_job, args=(job_id, job), daemon=True)
+        worker.start()
+        while worker.is_alive():
+            await asyncio.sleep(1)
+            overdue = False
             with _jobs_lock:
-                job.status = "done"
-                job.progress = 1.0
-                job.finished_at = time.monotonic()
-                job.result_filename = result.filename
-                job.result_content_type = result.content_type
-                job.result_data = result.data
-                job.file_bytes = b""  # free RAM
-        except HTTPException as exc:
-            with _jobs_lock:
-                job.status = "error"
-                job.error = str(exc.detail)
-                job.finished_at = time.monotonic()
-                job.file_bytes = b""
-        except asyncio.CancelledError:
-            with _jobs_lock:
-                if job.status == "running":
+                elapsed = time.monotonic() - job.started_at
+                if job.status == "running" and elapsed > JOB_DEADLINE_SECONDS:
                     job.status = "error"
-                    job.error = "Worker cancelled"
+                    job.error = "AI upscaling timed out (server busy). Please try again."
                     job.finished_at = time.monotonic()
                     job.file_bytes = b""
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("AI job %s failed", job_id)
-            with _jobs_lock:
-                job.status = "error"
-                job.error = str(exc) or "Unknown error"
-                job.finished_at = time.monotonic()
-                job.file_bytes = b""
+                    overdue = True
+            if overdue:
+                # Invalidate the Space client: the job was likely stuck on a
+                # dead session / hung client build. Done outside _jobs_lock to
+                # avoid lock-ordering issues with the orphan thread.
+                with _hf_client_lock:
+                    _hf_client = None
+                    _hf_client_created_at = 0.0
+                logger.warning("AI job %s force-failed after %.0fs", job_id, elapsed)
+                break
 
 
 def _gc_jobs() -> None:
