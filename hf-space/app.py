@@ -219,8 +219,8 @@ class RRDBNet(nn.Module):
         body_feat = self.body[0](feat)
         for block in self.body[1:]:
             body_feat = block(body_feat)
+        body_feat = self.conv_body(body_feat)
         feat = feat + body_feat
-        feat = self.conv_body(feat)
         feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode="nearest")))
         feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode="nearest")))
         feat = self.conv_hr(feat)
