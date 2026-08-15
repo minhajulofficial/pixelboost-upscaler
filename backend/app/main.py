@@ -118,10 +118,10 @@ MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_00
 AI_MAX_INPUT_PIXELS = int(os.environ.get("PIXELBOOST_AI_MAX_INPUT_PIXELS", str(4_000_000)))
 # Hard cap for one Space inference round-trip. gradio_client.predict has no
 # built-in timeout, so a stale session or a hung Space call would otherwise
-# block the single AI job worker forever and jam the whole queue. 300s is
-# comfortably above the slowest legitimate job (x4plus on a near-2.5MP input),
-# while still letting the worker recover quickly from dead sessions.
-AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "300"))
+# block the single AI job worker forever and jam the whole queue. 480s covers
+# slow-but-legitimate x4plus (ai-plus) jobs on near-2.5MP inputs, while still
+# letting the worker recover quickly from dead sessions (job deadline is 540s).
+AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "480"))
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
 # for large inputs but keep DOS protection on.
 Image.MAX_IMAGE_PIXELS = 200_000_000
@@ -143,9 +143,13 @@ _hf_client_created_at: float = 0.0
 _hf_client_lock = threading.Lock()
 # Re-create the gradio_client periodically. Long-lived Client instances have
 # been observed to drop their session/websocket state after extended idle.
-HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "300"))
-# Hard cap for the Client() constructor (config fetch).
-HF_BUILD_TIMEOUT_SECONDS = float(os.environ.get("PIXELBOOST_HF_BUILD_TIMEOUT", "30"))
+# Kept long (1h) because frequent rebuilds stall on HF's config endpoint from
+# Render; the predict timeout + client invalidation cover session drops.
+HF_CLIENT_TTL_SECONDS = float(os.environ.get("PIXELBOOST_HF_CLIENT_TTL", "3600"))
+# Hard cap for the Client() constructor (config fetch). From Render, HF's
+# metadata endpoint is intermittently slow (rate limiting), so allow 90s and
+# retry once before giving up.
+HF_BUILD_TIMEOUT_SECONDS = float(os.environ.get("PIXELBOOST_HF_BUILD_TIMEOUT", "90"))
 
 # Pool for wrapping gradio_client.predict calls with a hard timeout.
 _predict_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -597,16 +601,21 @@ def _build_hf_client_inner():
 def _build_hf_client():
     # Bound the Client() constructor: it fetches the Space config with no
     # built-in timeout, so a stalled connection would otherwise hang forever
-    # while holding _hf_client_lock and block every AI job behind it.
-    fut = _predict_pool.submit(_build_hf_client_inner)
-    fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
-    try:
-        return fut.result(timeout=HF_BUILD_TIMEOUT_SECONDS)
-    except concurrent.futures.TimeoutError:
-        raise HTTPException(
-            status_code=503,
-            detail="AI mode unavailable: connecting to the HF Space timed out.",
-        )
+    # while holding _hf_client_lock and block every AI job behind it. HF's
+    # metadata endpoint is intermittently slow from Render, so retry once.
+    for attempt in (1, 2):
+        fut = _predict_pool.submit(_build_hf_client_inner)
+        fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+        try:
+            return fut.result(timeout=HF_BUILD_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            if attempt == 1:
+                logger.warning("HF client build timed out; retrying once")
+                continue
+            raise HTTPException(
+                status_code=503,
+                detail="AI mode unavailable: connecting to the HF Space timed out.",
+            )
 
 
 def _get_hf_client():
