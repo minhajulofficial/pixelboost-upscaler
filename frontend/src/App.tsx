@@ -97,8 +97,8 @@ const MODE_OPTIONS: { id: Mode; label: string; hint: string }[] = [
 ];
 
 const ModesDesc: Record<Exclude<Mode, "fast">, string> = {
-  "ai-fast": "AI Fast runs Real-ESRGAN x4v3 on a free HuggingFace Space. Expect ~15–40 s per image plus a possible ~30 s cold start.",
-  "ai-plus": "AI Plus runs RealESRGAN x4plus on the Space — the best quality model but slower (~30–90 s). A ~30 s cold start may add on top.",
+  "ai-fast": "AI Fast runs Real-ESRGAN x4v3 on a free HuggingFace Space. Expect ~15–60 s plus a possible ~30 s cold start.",
+  "ai-plus": "AI Plus runs RealESRGAN x4plus on the Space — the best quality model but slower. Small images ~1–3 min; bigger photos can take several minutes (free CPU).",
   anime: "Anime runs RealESRGAN x4plus_anime_6B, tuned for illustrations and line art. Expect AI timings plus a possible ~30 s cold start.",
 };
 
@@ -115,7 +115,7 @@ const RETRY_BACKOFF_MS = [4_000, 12_000];
 
 // AI async-job polling parameters.
 const AI_POLL_INTERVAL_MS = 3_000;
-const AI_POLL_MAX_LIFETIME_MS = 10 * 60_000; // 10 min wall-clock per job
+const AI_POLL_MAX_LIFETIME_MS = 30 * 60_000; // 30 min wall-clock per job
 const AI_POLL_MAX_CONSECUTIVE_FAILURES = 6;
 
 // Errors that should *not* be retried (user-actionable / deterministic).
@@ -367,7 +367,7 @@ async function pollAiJob(
   while (true) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     if (Date.now() - startedAt > AI_POLL_MAX_LIFETIME_MS) {
-      throw new Error("AI job is taking longer than 10 minutes — giving up.");
+      throw new Error("AI job is taking longer than 30 minutes — giving up. Try Fast mode or a smaller image.");
     }
 
     let payload: JobStatusPayload | null = null;

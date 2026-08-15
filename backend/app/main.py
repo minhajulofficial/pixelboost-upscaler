@@ -118,10 +118,13 @@ MAX_OUTPUT_PIXELS = int(os.environ.get("PIXELBOOST_MAX_OUTPUT_PIXELS", str(40_00
 AI_MAX_INPUT_PIXELS = int(os.environ.get("PIXELBOOST_AI_MAX_INPUT_PIXELS", str(4_000_000)))
 # Hard cap for one Space inference round-trip. gradio_client.predict has no
 # built-in timeout, so a stale session or a hung Space call would otherwise
-# block the single AI job worker forever and jam the whole queue. 480s covers
-# slow-but-legitimate x4plus (ai-plus) jobs on near-2.5MP inputs, while still
-# letting the worker recover quickly from dead sessions (job deadline is 540s).
-AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "480"))
+# block the AI job worker forever and jam the whole queue. Free-tier x4plus on
+# real photos can take several minutes, and concurrent jobs queue behind the
+# Space's single worker, so keep this generous (27.5 min). A genuinely dead
+# session is invalidated after the timeout; the job deadline keeps the worst
+# case bounded. Kept under the frontends' 30-minute poll so a real failure
+# still surfaces before the browser gives up.
+AI_CALL_TIMEOUT_SECONDS = int(os.environ.get("PIXELBOOST_AI_CALL_TIMEOUT", "1650"))
 # Pillow's default DecompressionBomb threshold is ~89 megapixels; raise it a bit
 # for large inputs but keep DOS protection on.
 Image.MAX_IMAGE_PIXELS = 200_000_000
@@ -155,10 +158,12 @@ HF_BUILD_TIMEOUT_SECONDS = float(os.environ.get("PIXELBOOST_HF_BUILD_TIMEOUT", "
 _predict_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 MAX_ACTIVE_JOBS = int(os.environ.get("PIXELBOOST_MAX_ACTIVE_JOBS", "32"))
-JOB_TTL_SECONDS = float(os.environ.get("PIXELBOOST_JOB_TTL", "600"))
-# Hard deadline for one AI job (queued + running). Kept under the frontend's
-# 10-minute poll so users get a clear error instead of a silent hang.
-JOB_DEADLINE_SECONDS = float(os.environ.get("PIXELBOOST_JOB_DEADLINE", "540"))
+JOB_TTL_SECONDS = float(os.environ.get("PIXELBOOST_JOB_TTL", "1500"))
+# Hard deadline for one AI job (queued + running). Kept under the frontends'
+# 30-minute poll so users get a clear result instead of a silent hang, but
+# generous enough that slow-but-legit x4plus jobs on the free Space never
+# fail spuriously.
+JOB_DEADLINE_SECONDS = float(os.environ.get("PIXELBOOST_JOB_DEADLINE", "1650"))
 MAX_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_MAX_JOB_INPUT_BYTES", str(20 * 1024 * 1024)))
 AI_JOB_INPUT_BYTES = int(os.environ.get("PIXELBOOST_AI_JOB_INPUT_BYTES", str(12 * 1024 * 1024)))
 
