@@ -5,6 +5,7 @@ import Upscaler from './pages/Upscaler';
 import Dashboard from './pages/Dashboard';
 import Pricing from './pages/Pricing';
 import Admin from './pages/Admin';
+import Checkout from './pages/Checkout';
 import AuthModal from './components/AuthModal';
 import { ToastProvider } from './contexts/ToastContext';
 import { getCurrentUser } from './services/authService';
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="/" element={<Landing onAuth={() => setShowAuth(true)} user={user} />} />
           <Route path="/upscale" element={<Upscaler user={user} onShowAuth={() => setShowAuth(true)} />} />
           <Route path="/pricing" element={<Pricing user={user} onShowAuth={() => setShowAuth(true)} />} />
+          <Route path="/checkout" element={<Checkout user={user} onShowAuth={() => setShowAuth(true)} />} />
           <Route path="/dashboard" element={user ? <Dashboard user={user} onRefresh={checkAuth} /> : <Navigate to="/" replace />} />
           <Route path="/admin" element={<Admin user={user} onShowAuth={() => setShowAuth(true)} />} />
           <Route path="*" element={<Navigate to="/" replace />} />

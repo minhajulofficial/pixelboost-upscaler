@@ -27,8 +27,8 @@ export default function Pricing({ user, onShowAuth }: { user: User | null; onSho
                     </li>
                   ))}
                 </ul>
-                <Link to={tier.id === 'free' ? '/upscale' : '/dashboard'} className={`mt-6 block rounded-xl py-3 text-center text-sm font-semibold ${tier.id === 'pro' ? 'bg-purple-600 text-white hover:bg-purple-500' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
-                  {tier.id === 'free' ? 'Start Free' : 'Upgrade'}
+                <Link to={tier.id === 'free' ? '/upscale' : `/checkout?tier=${tier.id}`} className={`mt-6 block rounded-xl py-3 text-center text-sm font-semibold ${tier.id === 'pro' ? 'bg-purple-600 text-white hover:bg-purple-500' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
+                  {tier.id === 'free' ? 'Start Free' : 'Buy Now'}
                 </Link>
               </div>
             ))}
