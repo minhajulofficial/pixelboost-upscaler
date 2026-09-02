@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Sparkles, TrendingUp, Clock, CheckCircle, XCircle,
-  ArrowLeft, CreditCard, Zap,
+  Sparkles, TrendingUp, CheckCircle, CreditCard, Zap,
 } from 'lucide-react';
-import { User, signOut } from '../services/authService';
-import { getUserStats, getTierConfig, TIERS, upgradeTier, Tier } from '../services/creditService';
+import { signOut } from '../services/authService';
+import type { User } from '../lib/supabase';
+import { getUserStats, TIERS, upgradeTier, Tier } from '../services/creditService';
 
 type DashboardProps = {
   user: User;
@@ -14,10 +14,7 @@ type DashboardProps = {
 
 export default function Dashboard({ user, onRefresh }: DashboardProps) {
   const [stats, setStats] = useState({ totalJobs: 0, successfulJobs: 0, successRate: 0, last24h: 0 });
-  const [loading, setLoading] = useState(true);
   const [upgrading, setUpgrading] = useState(false);
-
-  const tierConfig = getTierConfig(user.tier);
 
   useEffect(() => {
     loadStats();
@@ -29,8 +26,6 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
       setStats(data);
     } catch (err) {
       console.error('Failed to load stats:', err);
-    } finally {
-      setLoading(false);
     }
   }
 

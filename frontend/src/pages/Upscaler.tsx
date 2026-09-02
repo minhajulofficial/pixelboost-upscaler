@@ -2,11 +2,12 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Upload, Download, Trash2, Loader2, Image as ImageIcon,
-  Sparkles, Zap, Wand2, Palette, ChevronDown, AlertCircle,
+  Sparkles, Zap, AlertCircle,
 } from 'lucide-react';
 import { fetchWithFailover, getServers } from '../services/serverPool';
-import { User, useCredit, canUseCredits } from '../services/authService';
-import { getRemainingCredits } from '../services/creditService';
+import { useCredit } from '../services/authService';
+import type { User } from '../lib/supabase';
+import { getRemainingCredits, canUseCredits } from '../services/creditService';
 
 type UpscalerProps = {
   user: User | null;
@@ -22,7 +23,6 @@ type ImageItem = {
   result?: Blob;
   resultPreview?: string;
   error?: string;
-  originalDims?: { width: number; height: number };
   resultDims?: { width: number; height: number };
 };
 
@@ -40,7 +40,6 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const [processing, setProcessing] = useState(false);
   const [selectedServer, setSelectedServer] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
   const servers = getServers();
   const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 10;
@@ -111,11 +110,13 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       const resultPreview = URL.createObjectURL(blob);
 
       // Get result dimensions
-      const img = new Image();
-      img.src = resultPreview;
+      const resultImg = new Image();
+      resultImg.src = resultPreview;
       await new Promise<void>((resolve) => {
-        img.onload = () => resolve();
+        resultImg.onload = () => resolve();
       });
+
+      const resultDims = { width: resultImg.naturalWidth, height: resultImg.naturalHeight };
 
       setImages((prev) =>
         prev.map((img) =>
@@ -126,7 +127,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                 progress: 100,
                 result: blob,
                 resultPreview,
-                resultDims: { width: img.naturalWidth, height: img.naturalHeight },
+                resultDims,
               }
             : img
         )

@@ -10,11 +10,11 @@ export type Server = {
   error?: string;
 };
 
-const DEFAULT_SERVERS: Server[] = [
+const DEFAULT_SERVERS: Server[] = ([
   {
     url: import.meta.env.VITE_SERVER_1_URL || 'https://pixelboost-backend-q659.onrender.com',
     name: 'Server 1',
-    status: 'unknown',
+    status: 'unknown' as ServerStatus,
     lastCheck: 0,
     responseTime: 0,
     jobsCount: 0,
@@ -22,7 +22,7 @@ const DEFAULT_SERVERS: Server[] = [
   {
     url: import.meta.env.VITE_SERVER_2_URL || '',
     name: 'Server 2',
-    status: 'unknown',
+    status: 'unknown' as ServerStatus,
     lastCheck: 0,
     responseTime: 0,
     jobsCount: 0,
@@ -30,12 +30,12 @@ const DEFAULT_SERVERS: Server[] = [
   {
     url: import.meta.env.VITE_SERVER_3_URL || '',
     name: 'Server 3',
-    status: 'unknown',
+    status: 'unknown' as ServerStatus,
     lastCheck: 0,
     responseTime: 0,
     jobsCount: 0,
   },
-].filter((s) => s.url); // Remove empty URLs
+] as Server[]).filter((s) => s.url); // Remove empty URLs
 
 let servers: Server[] = [...DEFAULT_SERVERS];
 let selectedIndex = 0;

@@ -1,4 +1,7 @@
-import { supabase, User } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import type { User } from '../lib/supabase';
+
+export type { User };
 
 export async function signInWithGoogle() {
   const { data, error } = await supabase.auth.signInWithOAuth({

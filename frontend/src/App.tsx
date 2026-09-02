@@ -4,7 +4,8 @@ import Landing from './pages/Landing';
 import Upscaler from './pages/Upscaler';
 import Dashboard from './pages/Dashboard';
 import AuthModal from './components/AuthModal';
-import { getCurrentUser, User } from './services/authService';
+import { getCurrentUser } from './services/authService';
+import type { User } from './lib/supabase';
 import { checkAllServers } from './services/serverPool';
 
 export default function App() {
