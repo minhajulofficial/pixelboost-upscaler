@@ -1,18 +1,21 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Sparkles, Zap, Shield, Globe, ArrowRight, Check, Star } from 'lucide-react';
-import AuthModal from '../components/AuthModal';
+import Topbar from '../components/Topbar';
+import Footer from '../components/Footer';
+import type { User } from '../lib/supabase';
 import { TIERS } from '../services/creditService';
 
 type LandingProps = {
   onAuth: () => void;
+  user: User | null;
 };
 
-export default function Landing({ onAuth }: LandingProps) {
-  const [showAuth, setShowAuth] = useState(false);
+export default function Landing({ onAuth, user }: LandingProps) {
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
+    <div className="flex min-h-screen flex-col bg-gray-950 text-white">
+      <Topbar user={user} onShowAuth={onAuth} />
       {/* Hero Section */}
       <section className="relative overflow-hidden">
         {/* Background gradient */}
@@ -175,19 +178,7 @@ export default function Landing({ onAuth }: LandingProps) {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="border-t border-gray-800 py-8">
-        <div className="mx-auto max-w-7xl px-4 text-center text-sm text-gray-500">
-          PixelBoost &middot; AI Image Upscaler &middot; Free &middot; No Watermarks
-        </div>
-      </footer>
-
-      {/* Auth Modal */}
-      <AuthModal
-        isOpen={showAuth}
-        onClose={() => setShowAuth(false)}
-        onAuth={onAuth}
-      />
+      <Footer />
     </div>
   );
 }

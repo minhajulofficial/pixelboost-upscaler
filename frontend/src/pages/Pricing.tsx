@@ -1,0 +1,41 @@
+import { Link } from 'react-router-dom';
+import { Check } from 'lucide-react';
+import Topbar from '../components/Topbar';
+import Footer from '../components/Footer';
+import type { User } from '../lib/supabase';
+import { TIERS } from '../services/creditService';
+
+export default function Pricing({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
+  return (
+    <div className="flex min-h-screen flex-col bg-gray-950">
+      <Topbar user={user} onShowAuth={onShowAuth} />
+      <main className="flex-1 px-4 py-12">
+        <div className="mx-auto max-w-5xl">
+          <div className="mb-10 text-center">
+            <h1 className="text-3xl font-bold text-white">Pricing</h1>
+            <p className="mt-2 text-gray-400">Start free. Pay only when you need more.</p>
+          </div>
+          <div className="grid gap-6 md:grid-cols-3">
+            {TIERS.map((tier) => (
+              <div key={tier.id} className={`rounded-2xl border p-6 ${tier.id === 'pro' ? 'border-purple-500 bg-purple-500/10' : 'border-gray-800 bg-gray-900'}`}>
+                <h3 className="text-lg font-bold text-white">{tier.label}</h3>
+                <div className="mt-2 text-3xl font-bold text-white">{tier.price}</div>
+                <ul className="mt-4 space-y-2">
+                  {tier.features.map((f, i) => (
+                    <li key={i} className="flex items-center gap-2 text-sm text-gray-300">
+                      <Check size={14} className="text-green-500" /> {f}
+                    </li>
+                  ))}
+                </ul>
+                <Link to={tier.id === 'free' ? '/upscale' : '/dashboard'} className={`mt-6 block rounded-xl py-3 text-center text-sm font-semibold ${tier.id === 'pro' ? 'bg-purple-600 text-white hover:bg-purple-500' : 'bg-gray-800 text-white hover:bg-gray-700'}`}>
+                  {tier.id === 'free' ? 'Start Free' : 'Upgrade'}
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      </main>
+      <Footer />
+    </div>
+  );
+}

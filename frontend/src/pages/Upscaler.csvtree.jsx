@@ -23,7 +23,7 @@
 // one-time download; the WebGPU capability is surfaced so users know which
 // device path they're on. Both compute paths support PNG / JPEG / WebP.
 
-import {
+import React, {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -34,29 +34,33 @@ import {
   Trash2, StopCircle, Plus, Zap, Wand2, Package,
   Server, Cpu, Palette, Globe, HardDrive, Shield, Eye,
 } from 'lucide-react';
-import type { User } from '../lib/supabase';
-import { canUseCredits, getRemainingCredits } from '../services/creditService';
-import { useCredit } from '../services/authService';
-import { isAdmin } from '../services/adminService';
-// @ts-ignore - JS service without declaration
+import Topbar from '../components/Topbar';
+import ToolNav from '../components/ToolNav';
+import Footer from '../components/Footer';
+import SiteMeta from '../components/SiteMeta';
+import { getToolSeo } from '../data/toolSeo';
+import { useToast } from '../contexts/ToastContext';
+import { useSiteSettings } from '../contexts/SettingsContext';
+import { getToolUploadLimit } from '../services/userService';
+import { useToolGate } from '../hooks/useToolGate';
+import useEscapeKey from '../hooks/useEscapeKey';
+import ToolGateBanner, { CreditCostBadge } from '../components/ToolGateBanner';
+import AuthModal from '../components/AuthModal';
 import { runLocalUpscale, canUseWebGpu, isModelCached, modelSizeEstimateMB } from '../services/localUpscale';
-// @ts-ignore - JS service without declaration
 import { splitForUpscale, recombineAlpha } from '../services/alphaPreserve';
 
 // PixelBoost backend (used directly when DIRECT_MODE, or as the proxy's
 // fallback). Override via env for staging / self-hosted.
-const API_BASE = ((import.meta.env as Record<string, string | undefined>).VITE_API_URL || 'https://pixelboost-backend-q659.onrender.com').replace(/\/+$/, '');
-// When VITE_API_URL is set, the deploy is self-hosted and
+const API_BASE = (process.env.REACT_APP_PIXELBOOST_API_URL || 'https://pixelboost-backend-q659.onrender.com').replace(/\/+$/, '');
+// When REACT_APP_PIXELBOOST_API_URL is set, the deploy is self-hosted and
 // should talk to the backend directly (optionally with a token). Otherwise we
 // use the same-origin Vercel proxy which injects the shared token server-side.
-const DIRECT_MODE = !!((import.meta.env as Record<string, string | undefined>).VITE_API_URL);
-const DIRECT_TOKEN = (import.meta.env as Record<string, string | undefined>).VITE_API_TOKEN || '';
+const DIRECT_MODE = !!process.env.REACT_APP_PIXELBOOST_API_URL;
+const DIRECT_TOKEN = process.env.REACT_APP_PIXELBOOST_TOKEN || '';
 const PROXY_BASE = typeof window !== 'undefined' ? `${window.location.origin}/api/upscale-proxy` : '';
 
 const ENGINE_SERVER = 'server';
 const ENGINE_LOCAL = 'local';
-
-type Engine = typeof ENGINE_SERVER | typeof ENGINE_LOCAL;
 
 const SERVER_MODES = [
   { id: 'fast', label: 'Fast', blurb: 'Pillow LANCZOS · ~50 ms', Icon: Zap },
@@ -79,20 +83,10 @@ const SCALE_OPTIONS = [
 ];
 const FALLBACK_SCALE_IDS = [2, 3, 4, 6, 8];
 
-type FormatOption = {
-  id: string;
-  label: string;
-  ext: string;
-  mime: string;
-  blurb: string;
-  backendFormat: string;
-  clientEncode: boolean;
-};
-
-const FORMAT_OPTIONS: FormatOption[] = [
-  { id: 'png', label: 'PNG', ext: 'png', mime: 'image/png', blurb: 'Lossless', backendFormat: 'png', clientEncode: false },
-  { id: 'jpg', label: 'JPEG', ext: 'jpg', mime: 'image/jpeg', blurb: 'Smaller', backendFormat: 'jpg', clientEncode: false },
-  { id: 'webp', label: 'WebP', ext: 'webp', mime: 'image/webp', blurb: 'Modern', backendFormat: 'png', clientEncode: true },
+const FORMAT_OPTIONS = [
+  { id: 'png',  label: 'PNG',  ext: 'png',  mime: 'image/png',  blurb: 'Lossless', backendFormat: 'png', clientEncode: false },
+  { id: 'jpg',  label: 'JPEG', ext: 'jpg',  mime: 'image/jpeg', blurb: 'Smaller',   backendFormat: 'jpg', clientEncode: false },
+  { id: 'webp', label: 'WebP', ext: 'webp', mime: 'image/webp', blurb: 'Modern',    backendFormat: 'png', clientEncode: true  },
 ];
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -105,42 +99,20 @@ const QUALITY_STORAGE = 'csvtree_upscaler_quality';
 const AI_POLL_INTERVAL_MS = 2000;
 const AI_POLL_TIMEOUT_MS = 30 * 60 * 1000;
 
-type UpscalerProps = {
-  user: User | null;
-  onShowAuth: () => void;
-};
-
-type ItemStatus = 'queued' | 'processing' | 'done' | 'failed' | 'cancelled';
-
-type UpscalerItem = {
-  id: string;
-  file: File;
-  originalUrl: string;
-  status: ItemStatus;
-  progress: number;
-  stage: string;
-  resultUrl: string | null;
-  resultSize: number | null;
-  resultExt: string;
-  origDims: { width: number; height: number } | null;
-  resultDims: { width: number; height: number } | null;
-  error: string;
-};
-
-function uid(): string {
+function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function formatBytes(bytes: number | null | undefined): string {
+function formatBytes(bytes) {
   if (!bytes) return '';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => resolve(undefined), ms);
+    const t = setTimeout(resolve, ms);
     if (signal) {
       const onAbort = () => {
         clearTimeout(t);
@@ -153,7 +125,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 // Read {width, height} of an <img> from any object URL / src.
-function readImageDims(src: string): Promise<{ width: number; height: number }> {
+function readImageDims(src) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
@@ -162,11 +134,11 @@ function readImageDims(src: string): Promise<{ width: number; height: number }> 
   });
 }
 
-async function readErrorDetail(res: Response): Promise<string> {
+async function readErrorDetail(res) {
   try {
-    const data = await res.json() as Record<string, unknown>;
+    const data = await res.json();
     if (data?.detail) return typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
-    if (data?.error) return typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+    if (data?.error)  return typeof data.error  === 'string' ? data.error  : JSON.stringify(data.error);
   } catch {
     try {
       const text = await res.text();
@@ -176,12 +148,12 @@ async function readErrorDetail(res: Response): Promise<string> {
   return `${res.status} ${res.statusText}`.trim();
 }
 
-async function fetchViaProxy(path: string, { method = 'POST', body, signal, headers = {} }: { method?: string; body?: BodyInit | null; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<Response> {
+async function fetchViaProxy(path, { method = 'POST', body, signal, headers = {} } = {}) {
   // Self-hosted / staging deploy → straight to the configured backend.
   if (DIRECT_MODE) {
-    const directHeaders: Record<string, string> = { ...headers };
+    const directHeaders = { ...headers };
     if (DIRECT_TOKEN) directHeaders['X-PixelBoost-Token'] = DIRECT_TOKEN;
-    const directRes = await fetch(`${API_BASE}${path}`, { method, headers: directHeaders, body: body as BodyInit | undefined, signal });
+    const directRes = await fetch(`${API_BASE}${path}`, { method, headers: directHeaders, body, signal });
     return directRes;
   }
   // Prefer the same-origin proxy which injects the shared token server-side.
@@ -190,7 +162,7 @@ async function fetchViaProxy(path: string, { method = 'POST', body, signal, head
       const res = await fetch(`${PROXY_BASE}?${method === 'GET' ? path.split('?')[1] || '' : ''}`, {
         method,
         headers: { ...headers, 'X-Proxy-Path': path.split('?')[0] },
-        body: method === 'POST' ? body as BodyInit | undefined : undefined,
+        body: method === 'POST' ? body : undefined,
         signal,
       });
       if (res.ok || res.status === 401 || res.status === 403) return res;
@@ -200,19 +172,11 @@ async function fetchViaProxy(path: string, { method = 'POST', body, signal, head
       // Proxy unreachable → fall back to direct.
     }
   }
-  const directRes = await fetch(`${API_BASE}${path}`, { method, headers, body: body as BodyInit | undefined, signal });
+  const directRes = await fetch(`${API_BASE}${path}`, { method, headers, body, signal });
   return directRes;
 }
 
-async function runServerUpscale({ file, scale, fmt, quality, mode, signal, onProgress }: {
-  file: Blob;
-  scale: number;
-  fmt: FormatOption;
-  quality: number;
-  mode: string;
-  signal?: AbortSignal;
-  onProgress: (pct: number, stage: string) => void;
-}): Promise<Blob> {
+async function runServerUpscale({ file, scale, fmt, quality, mode, signal, onProgress }) {
   // Fast (Pillow LANCZOS) and the AI modes are all served by the backend's
   // async job pipeline. We route Fast through /jobs/upscale-ai (with mode=
   // 'fast') instead of the old synchronous /upscale call so it rides the same
@@ -221,14 +185,14 @@ async function runServerUpscale({ file, scale, fmt, quality, mode, signal, onPro
   // result just like the AI modes.
   onProgress(5, mode === 'fast' ? 'Uploading…' : 'Submitting…');
   const body = new FormData();
-  body.append('file', file, (file as File).name || 'image.png');
+  body.append('file', file, file.name);
   body.append('scale', String(scale));
   body.append('format', fmt.backendFormat || fmt.id);
   body.append('quality', String(quality));
   body.append('mode', mode);
   const submit = await fetchViaProxy('/jobs/upscale-ai', { method: 'POST', body, signal });
   if (!submit.ok) throw new Error(await readErrorDetail(submit));
-  const submitData = await submit.json() as { id?: string };
+  const submitData = await submit.json();
   const jobId = submitData?.id;
   if (!jobId) throw new Error('Backend did not return a job id.');
 
@@ -249,7 +213,7 @@ async function runServerUpscale({ file, scale, fmt, quality, mode, signal, onPro
       if (statusRes.status === 404) throw new Error('Job not found on the server (it may have expired).');
       throw new Error(await readErrorDetail(statusRes));
     }
-    const status = await statusRes.json() as { status: string; progress?: number; error?: string };
+    const status = await statusRes.json();
     if (status.status === 'error') throw new Error(status.error || 'Upscale job failed.');
     const backendPct = Math.round(Math.max(0, Math.min(1, status.progress || 0)) * 100);
     if (backendPct > lastBackendProgress) lastBackendProgress = backendPct;
@@ -267,7 +231,7 @@ async function runServerUpscale({ file, scale, fmt, quality, mode, signal, onPro
   }
 }
 
-function loadImageElement(src: string): Promise<HTMLImageElement> {
+function loadImageElement(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -277,7 +241,7 @@ function loadImageElement(src: string): Promise<HTMLImageElement> {
   });
 }
 
-async function transcodeToWebp(blob: Blob, qualityPct: number): Promise<Blob> {
+async function transcodeToWebp(blob, qualityPct) {
   const url = URL.createObjectURL(blob);
   try {
     const img = await loadImageElement(url);
@@ -285,10 +249,9 @@ async function transcodeToWebp(blob: Blob, qualityPct: number): Promise<Blob> {
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Canvas not supported');
     ctx.drawImage(img, 0, 0);
     const q = Math.max(0.4, Math.min(1, qualityPct / 100));
-    return await new Promise<Blob>((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode WebP.'))), 'image/webp', q);
     });
   } finally {
@@ -296,24 +259,24 @@ async function transcodeToWebp(blob: Blob, qualityPct: number): Promise<Blob> {
   }
 }
 
-function statusBadge(status: ItemStatus): { text: string; cls: string } {
+function statusBadge(status) {
   switch (status) {
-    case 'queued': return { text: 'Queued', cls: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300' };
-    case 'processing': return { text: 'Working', cls: 'bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300' };
-    case 'done': return { text: 'Done', cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' };
-    case 'failed': return { text: 'Failed', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' };
-    case 'cancelled': return { text: 'Cancelled', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' };
-    default: return { text: status, cls: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300' };
+    case 'queued':     return { text: 'Queued',    cls: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300' };
+    case 'processing': return { text: 'Working',   cls: 'bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300' };
+    case 'done':       return { text: 'Done',      cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' };
+    case 'failed':     return { text: 'Failed',    cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' };
+    case 'cancelled':  return { text: 'Cancelled', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' };
+    default:           return { text: status,      cls: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300' };
   }
 }
 
 // Full-screen before/after preview — mirrors the main PixelBoost site's modal.
 // Original + upscaled side by side with dimensions and file sizes.
-function BeforeAfterPreview({ item, fmtExt, onClose }: { item: UpscalerItem; fmtExt: string; onClose: () => void }) {
+function BeforeAfterPreview({ item, fmtExt, onClose }) {
   useEscapeKey(onClose);
   if (typeof document === 'undefined') return null;
 
-  const dims = (d: { width: number; height: number } | null | undefined) => (d && d.width ? `${d.width} × ${d.height}` : '');
+  const dims = (d) => (d && d.width ? `${d.width} × ${d.height}` : '');
   return createPortal(
     <div
       className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-3 sm:p-6"
@@ -374,58 +337,43 @@ function BeforeAfterPreview({ item, fmtExt, onClose }: { item: UpscalerItem; fmt
   );
 }
 
-function loadSetting<T>(key: string, fallback: T, validator: (v: unknown) => boolean): T {
+function loadSetting(key, fallback, validator) {
   try {
     const raw = localStorage.getItem(key);
     if (raw === null) return fallback;
     const parsed = (() => { try { return JSON.parse(raw); } catch { return raw; } })();
-    return validator(parsed) ? (parsed as T) : fallback;
+    return validator(parsed) ? parsed : fallback;
   } catch {
     return fallback;
   }
 }
 
-function useEscapeKey(onClose: () => void): void {
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-}
+export default function ToolUpscaler() {
+  const toast = useToast();
+  const { settings: siteSettings } = useSiteSettings();
+  const maxBatchFiles = getToolUploadLimit(siteSettings, 'upscaler');
+  const hasBatchCap = Number.isFinite(maxBatchFiles);
+  const gate = useToolGate('upscaler');
+  const fileInputRef = useRef();
+  const abortRef = useRef(null);
 
-export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const [items, setItems] = useState<UpscalerItem[]>([]);
-  const [engine, setEngine] = useState<Engine>(() => loadSetting(ENGINE_STORAGE, ENGINE_SERVER as Engine,
+  const [showAuth, setShowAuth] = useState(false);
+  const [items, setItems] = useState([]);
+  const [engine, setEngine] = useState(() => loadSetting(ENGINE_STORAGE, ENGINE_SERVER,
     (v) => v === ENGINE_SERVER || v === ENGINE_LOCAL));
-  const [mode, setMode] = useState<string>(() => loadSetting(MODE_STORAGE, 'fast', () => true));
-  const [scale, setScale] = useState<number>(() => loadSetting(SCALE_STORAGE, 2,
+  const [mode, setMode] = useState(() => loadSetting(MODE_STORAGE, 'fast', () => true));
+  const [scale, setScale] = useState(() => loadSetting(SCALE_STORAGE, 2,
     (v) => SCALE_OPTIONS.some((s) => s.id === v)));
-  const [availableScaleIds, setAvailableScaleIds] = useState<number[]>(FALLBACK_SCALE_IDS);
-  const [format, setFormat] = useState<string>(() => loadSetting(FORMAT_STORAGE, 'png',
+  const [availableScaleIds, setAvailableScaleIds] = useState(FALLBACK_SCALE_IDS);
+  const [format, setFormat] = useState(() => loadSetting(FORMAT_STORAGE, 'png',
     (v) => FORMAT_OPTIONS.some((f) => f.id === v)));
-  const [quality, setQuality] = useState<number>(() => loadSetting(QUALITY_STORAGE, 92,
-    (v) => Number.isInteger(v) && (v as number) >= 50 && (v as number) <= 100));
+  const [quality, setQuality] = useState(() => loadSetting(QUALITY_STORAGE, 92,
+    (v) => Number.isInteger(v) && v >= 50 && v <= 100));
   const [processing, setProcessing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [webgpu, setWebgpu] = useState<boolean | null>(null); // null=unknown, true/false
+  const [webgpu, setWebgpu] = useState(null); // null=unknown, true/false
   const [modelCached, setModelCached] = useState(false);
-  const [previewId, setPreviewId] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ type: 'error' | 'success' | 'info'; message: string } | null>(null);
-
-  const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 0;
-  const admin = isAdmin(user);
-
-  const showToast = useCallback((message: string, type: 'error' | 'success' | 'info' = 'error') => {
-    setToast({ type, message });
-    // also log for debugging
-    if (type === 'error') console.error(message);
-    setTimeout(() => setToast((curr) => (curr?.message === message ? null : curr)), 4000);
-  }, []);
+  const [previewId, setPreviewId] = useState(null);
 
   useEffect(() => { try { localStorage.setItem(ENGINE_STORAGE, engine); } catch { /* */ } }, [engine]);
   useEffect(() => { try { localStorage.setItem(MODE_STORAGE, mode); } catch { /* */ } }, [mode]);
@@ -437,7 +385,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   useEffect(() => {
     setWebgpu(canUseWebGpu());
     let alive = true;
-    isModelCached().then((cached: boolean) => { if (alive) setModelCached(cached); }).catch(() => {});
+    isModelCached().then((cached) => { if (alive) setModelCached(cached); }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -449,7 +397,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       try {
         const res = await fetchViaProxy('/', { method: 'GET', signal: controller.signal, headers: { Accept: 'application/json' } });
         if (!res.ok) return;
-        const data = await res.json() as { scales?: number[] };
+        const data = await res.json();
         const raw = Array.isArray(data?.scales) ? data.scales : [];
         const supported = raw
           .map((n) => Number(n))
@@ -473,16 +421,16 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
     setItems((curr) => {
       curr.forEach((it) => {
         if (it.originalUrl) URL.revokeObjectURL(it.originalUrl);
-        if (it.resultUrl) URL.revokeObjectURL(it.resultUrl);
+        if (it.resultUrl)   URL.revokeObjectURL(it.resultUrl);
       });
       return [];
     });
   }, []);
 
-  const queueCount = useMemo(() => items.filter((i) => i.status === 'queued').length, [items]);
-  const doneCount = useMemo(() => items.filter((i) => i.status === 'done').length, [items]);
+  const queueCount  = useMemo(() => items.filter((i) => i.status === 'queued').length, [items]);
+  const doneCount   = useMemo(() => items.filter((i) => i.status === 'done').length, [items]);
   const failedCount = useMemo(() => items.filter((i) => i.status === 'failed').length, [items]);
-  const fmtChoice = useMemo(() => FORMAT_OPTIONS.find((f) => f.id === format) || FORMAT_OPTIONS[0], [format]);
+  const fmtChoice   = useMemo(() => FORMAT_OPTIONS.find((f) => f.id === format) || FORMAT_OPTIONS[0], [format]);
 
   const activeModes = useMemo(() => (engine === ENGINE_LOCAL ? LOCAL_MODES : SERVER_MODES), [engine]);
   // If the persisted mode isn't valid for the current engine, snap to the first.
@@ -491,24 +439,36 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   }, [activeModes, mode]);
   const modeChoice = useMemo(() => activeModes.find((m) => m.id === mode) || activeModes[0], [activeModes, mode]);
 
-  const updateItem = useCallback((id: string, patch: Partial<UpscalerItem>) => {
+  const updateItem = useCallback((id, patch) => {
     setItems((curr) => curr.map((it) => (it.id === id ? { ...it, ...patch } : it)));
   }, []);
 
-  const addFiles = useCallback((rawFiles: File[]) => {
-    const valid: File[] = [];
+  const addFiles = useCallback((rawFiles) => {
+    const valid = [];
     for (const f of rawFiles) {
       if (!f.type.startsWith('image/')) continue;
       if (f.size > MAX_FILE_BYTES) {
-        showToast(`${f.name}: file too large (max ${formatBytes(MAX_FILE_BYTES)}).`);
+        toast.error(`${f.name}: file too large (max ${formatBytes(MAX_FILE_BYTES)}).`);
         continue;
       }
       valid.push(f);
     }
     setItems((curr) => {
-      // No batch cap in PixelBoost Vite version — accept all valid
-      const accepted = valid;
-      const next: UpscalerItem[] = accepted.map((file) => ({
+      let accepted;
+      if (!hasBatchCap) {
+        accepted = valid;
+      } else {
+        const remaining = maxBatchFiles - curr.length;
+        if (remaining <= 0) {
+          toast.error(`Queue full (max ${maxBatchFiles}). Remove a file first.`);
+          return curr;
+        }
+        accepted = valid.slice(0, remaining);
+        if (valid.length > accepted.length) {
+          toast.error(`Only ${accepted.length} of ${valid.length} files added (queue limit ${maxBatchFiles}).`);
+        }
+      }
+      const next = accepted.map((file) => ({
         id: uid(),
         file,
         originalUrl: URL.createObjectURL(file),
@@ -525,7 +485,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       return [...curr, ...next];
     });
     // Read original dimensions asynchronously (for the preview header).
-    valid.forEach((file) => {
+    valid.slice(0, hasBatchCap ? maxBatchFiles : valid.length).forEach((file) => {
       const url = URL.createObjectURL(file);
       readImageDims(url).then((dims) => {
         URL.revokeObjectURL(url);
@@ -533,26 +493,26 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
         setItems((curr) => curr.map((it) => (it.file === file ? { ...it, origDims: dims } : it)));
       }).catch(() => URL.revokeObjectURL(url));
     });
-  }, [showToast]);
+  }, [toast, hasBatchCap, maxBatchFiles]);
 
-  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function onFileChange(e) {
     const files = Array.from(e.target.files || []);
     if (files.length) addFiles(files);
     e.target.value = '';
   }
 
-  function onDrop(e: React.DragEvent) {
+  function onDrop(e) {
     e.preventDefault();
     setDragOver(false);
     const files = Array.from(e.dataTransfer.files || []);
     if (files.length) addFiles(files);
   }
 
-  function removeItem(id: string) {
+  function removeItem(id) {
     setItems((curr) => curr.filter((it) => {
       if (it.id !== id) return true;
       if (it.originalUrl) URL.revokeObjectURL(it.originalUrl);
-      if (it.resultUrl) URL.revokeObjectURL(it.resultUrl);
+      if (it.resultUrl)   URL.revokeObjectURL(it.resultUrl);
       return false;
     }));
   }
@@ -562,16 +522,16 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
     setItems((curr) => {
       curr.forEach((it) => {
         if (it.originalUrl) URL.revokeObjectURL(it.originalUrl);
-        if (it.resultUrl) URL.revokeObjectURL(it.resultUrl);
+        if (it.resultUrl)   URL.revokeObjectURL(it.resultUrl);
       });
       return [];
     });
   }
 
-  async function runOne(item: UpscalerItem, signal?: AbortSignal): Promise<Blob> {
-    const onProgress = (pct: number, stage: string) => updateItem(item.id, { progress: pct, stage });
-    let blob: Blob;
-    let split: Awaited<ReturnType<typeof splitForUpscale>> | null = null;
+  async function runOne(item, signal) {
+    const onProgress = (pct, stage) => updateItem(item.id, { progress: pct, stage });
+    let blob;
+    let split = null;
     if (engine === ENGINE_LOCAL) {
       updateItem(item.id, { status: 'processing', progress: 0, stage: 'Starting…', error: '' });
       blob = await runLocalUpscale(item.file, {
@@ -587,7 +547,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       // Composite over white, upscale that, then re-attach the alpha channel
       // client-side so transparent PNGs stay "same to same".
       split = await splitForUpscale(item.file);
-      const sendFile: Blob = split.hasAlpha ? split.rgbBlob! : item.file;
+      const sendFile = split.hasAlpha ? split.rgbBlob : item.file;
       if (split.hasAlpha) onProgress(12, 'Preparing transparency…');
       blob = await runServerUpscale({
         file: sendFile,
@@ -602,7 +562,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
         onProgress(93, 'Restoring transparency…');
         blob = await recombineAlpha(
           blob,
-          split.alphaData!,
+          split.alphaData,
           split.width,
           split.height,
           fmtChoice.id === 'webp' ? 'image/webp' : 'image/png',
@@ -621,18 +581,13 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
     if (processing) return;
     const queued = items.filter((it) => it.status === 'queued');
     if (!queued.length) {
-      showToast('Queue is empty. Drop some images first.');
+      toast.error('Queue is empty. Drop some images first.');
       return;
     }
-    // Supabase auth gate: require sign-in
-    if (!user) {
-      onShowAuth();
-      showToast('Please sign in to use the Upscaler.');
-      return;
-    }
-    // Credits gate for server engine (local free but still requires sign-in per requirements)
-    if (engine === ENGINE_SERVER && !canUseCredits(user.credits_used, user.credits_limit)) {
-      showToast(`Out of credits — ${remainingCredits} remaining. Upgrade your plan.`);
+    const pre = gate.preflight();
+    if (!pre.allowed) {
+      if (pre.reason === 'sign-in-required') setShowAuth(true);
+      else toast.error("You can't run the Upscaler right now. See the banner above for details.");
       return;
     }
 
@@ -644,11 +599,13 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
           updateItem(item.id, { status: 'cancelled', stage: '' });
           continue;
         }
-        // Per-item credit check for server mode
-        if (engine === ENGINE_SERVER && !canUseCredits(user.credits_used, user.credits_limit)) {
+        const itemPre = gate.preflight();
+        if (!itemPre.allowed) {
           updateItem(item.id, {
             status: 'failed',
-            error: `Out of credits — need 1, have ${remainingCredits}.`,
+            error: itemPre.reason === 'out-of-credits'
+              ? `Out of credits — need ${itemPre.cost}, have ${gate.credits}.`
+              : 'Locked. Please review the banner above.',
             stage: '', progress: 0,
           });
           continue;
@@ -669,26 +626,20 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
             if (dims.width) updateItem(item.id, { resultDims: dims });
           }).catch(() => {});
           // On-device runs consume no server resources → no credit charge.
-          if (engine === ENGINE_SERVER && user) {
-            try {
-              await useCredit(user.id);
-            } catch (creditErr) {
-              console.warn('useCredit failed:', creditErr);
-            }
+          if (engine === ENGINE_SERVER) {
+            gate.charge({ mode, scale, format: fmtChoice.id }).catch(() => {});
           }
-        } catch (err: unknown) {
-          const name = (err as { name?: string })?.name;
-          const msg = (err as { message?: string })?.message;
-          if (name === 'AbortError' || msg === 'Aborted') {
+        } catch (err) {
+          if (err?.name === 'AbortError' || err?.message === 'Aborted') {
             updateItem(item.id, { status: 'cancelled', stage: '', progress: 0 });
           } else {
             updateItem(item.id, {
               status: 'failed',
-              error: msg || 'Upscale failed.',
+              error: err?.message || 'Upscale failed.',
               stage: '',
               progress: 0,
             });
-            showToast(`${item.file.name}: ${msg || 'failed'}`);
+            toast.error(`${item.file.name}: ${err?.message || 'failed'}`);
           }
         }
       }
@@ -705,7 +656,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
     )));
   }
 
-  function downloadItem(item: UpscalerItem) {
+  function downloadItem(item) {
     if (!item.resultUrl) return;
     const a = document.createElement('a');
     a.href = item.resultUrl;
@@ -719,7 +670,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   async function downloadAllZip() {
     const ready = items.filter((it) => it.status === 'done' && it.resultUrl);
     if (!ready.length) {
-      showToast('No upscaled images yet.');
+      toast.error('No upscaled images yet.');
       return;
     }
     try {
@@ -727,7 +678,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       const zip = new JSZip();
       for (const it of ready) {
         // eslint-disable-next-line no-await-in-loop
-        const blob = await fetch(it.resultUrl!).then((r) => r.blob());
+        const blob = await fetch(it.resultUrl).then((r) => r.blob());
         const baseName = (it.file?.name || 'image').replace(/\.[^.]+$/, '');
         zip.file(`${baseName}-${scale}x.${it.resultExt || fmtChoice.ext}`, blob);
       }
@@ -740,12 +691,12 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1500);
-    } catch (err: unknown) {
-      showToast((err as Error)?.message || 'Could not build ZIP.');
+    } catch (err) {
+      toast.error(err?.message || 'Could not build ZIP.');
     }
   }
 
-  function switchEngine(next: Engine) {
+  function switchEngine(next) {
     setEngine(next);
   }
 
@@ -762,114 +713,40 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
     : 'Everything runs in your browser — nothing is uploaded. Best for privacy and free unlimited use.';
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-950 text-gray-100">
-      {/* Professional header with PixelBoost brand, credit display, Dashboard/Admin links, Sign In button */}
-      <header className="sticky top-0 z-40 border-b border-gray-800 bg-gray-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1100px] items-center justify-between px-3 md:px-5 py-3">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-pink-500 to-fuchsia-600 flex items-center justify-center text-white shadow-md">
-              <Sparkles size={16} />
-            </div>
-            <span className="text-lg font-bold text-white tracking-tight">PixelBoost</span>
-          </Link>
+    <div className="min-h-screen flex flex-col bg-gray-50 dark:bg-[#0a1a0f] text-gray-900 dark:text-gray-100 transition-colors">
+      <SiteMeta {...(getToolSeo('upscaler') || {})} />
+      <ToolNav />
+      <Topbar hideSidebarToggle withToolNav onToggleSidebar={() => {}} />
 
-          <div className="flex items-center gap-3">
-            {user ? (
-              <div className="flex items-center gap-3">
-                <div className="hidden sm:flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs">
-                  <span className="text-gray-400">Credits:</span>
-                  <span className={`font-bold ${remainingCredits === 0 ? 'text-red-400' : 'text-white'}`}>
-                    {remainingCredits === Infinity ? 'Unlimited' : remainingCredits}
-                  </span>
-                  <span className="text-gray-500">/ {user.credits_limit === Infinity ? '∞' : user.credits_limit}</span>
-                </div>
-                <Link to="/dashboard" className="text-xs font-medium text-gray-300 hover:text-white transition-colors">Dashboard</Link>
-                {admin && <Link to="/admin" className="text-xs font-bold text-purple-400 hover:text-purple-300 transition-colors">Admin</Link>}
-                <img
-                  src={user.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.email)}`}
-                  alt={user.email}
-                  className="h-8 w-8 rounded-full border border-gray-700"
-                />
-                <span className="hidden md:inline text-xs text-gray-400 max-w-[140px] truncate">{user.email}</span>
-              </div>
-            ) : (
-              <button
-                onClick={onShowAuth}
-                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500 transition-colors"
-              >
-                Sign In
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {/* Toast */}
-      {toast && (
-        <div className="fixed top-[64px] left-1/2 -translate-x-1/2 z-50 max-w-[90vw]">
-          <div className={`rounded-xl px-4 py-3 text-sm font-medium shadow-xl border flex items-center gap-2 ${
-            toast.type === 'error' ? 'bg-red-900/90 border-red-700 text-red-100' :
-            toast.type === 'success' ? 'bg-green-900/90 border-green-700 text-green-100' :
-            'bg-gray-800 border-gray-700 text-white'
-          }`}>
-            {toast.type === 'error' && <X size={14} className="shrink-0" />}
-            <span>{toast.message}</span>
-            <button onClick={() => setToast(null)} className="ml-2 opacity-70 hover:opacity-100"><X size={12} /></button>
-          </div>
-        </div>
-      )}
-
-      <main className="flex-1">
+      <main className="flex-1 pt-[56px] lg:pl-[var(--toolnav-w,220px)]">
         <div className="max-w-[1100px] mx-auto px-3 md:px-5 py-6">
-          <Link to="/" className="inline-flex items-center gap-2 text-gray-400 hover:text-white text-xs mb-4 transition-colors">
-            <ArrowLeft size={14} /> Back to Home
+          <Link to="/tools/generator" className="inline-flex items-center gap-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-xs mb-4 transition-colors">
+            <ArrowLeft size={14} /> Back to Generator
           </Link>
 
-          <header className="flex items-start gap-4 mb-6">
+          <header className="flex items-start gap-4 mb-6 animate-slide-up">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-pink-400 to-fuchsia-600 text-white flex items-center justify-center shadow-lg shrink-0">
               <ZoomIn size={22} />
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-2xl md:text-3xl font-bold text-white">Image Upscaler</h1>
+                <h1 className="text-2xl md:text-3xl font-bold">Image Upscaler</h1>
                 {engine === ENGINE_SERVER
-                  ? <span className="text-[10px] font-bold uppercase tracking-wider text-pink-300 bg-pink-900/40 border border-pink-800 px-2 py-1 rounded-md">1 credit / image</span>
-                  : <span className="text-[10px] font-bold uppercase tracking-wider text-green-400 bg-green-900/30 border border-green-800 px-2 py-1 rounded-md">Free · runs on your PC</span>}
+                  ? <CreditCostBadge cost={gate.cost} />
+                  : <span className="text-[10px] font-bold uppercase tracking-wider text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/30 px-2 py-1 rounded-md">Free · runs on your PC</span>}
               </div>
-              <p className="text-xs text-gray-400 mt-1 max-w-3xl leading-relaxed">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-3xl leading-relaxed">
                 Enlarge photos 2× to 8×. Up to four server AI tiers (Real-ESRGAN) or fully-private on-device upscaling (WebGPU/WASM) — your choice.
               </p>
             </div>
           </header>
 
-          {/* Credit / auth gate banner */}
-          {!user && (
-            <div className="mb-4 rounded-xl border border-amber-800/60 bg-amber-950/40 p-3 flex items-center justify-between gap-3">
-              <p className="text-xs text-amber-200">
-                <strong>Sign in required</strong> — please sign in to use the upscaler. Server mode uses credits; Your PC mode is free.
-              </p>
-              <button onClick={onShowAuth} className="shrink-0 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-bold text-black hover:bg-amber-400 transition-colors">Sign In</button>
-            </div>
-          )}
-          {user && engine === ENGINE_SERVER && !canUseCredits(user.credits_used, user.credits_limit) && (
-            <div className="mb-4 rounded-xl border border-red-800/60 bg-red-950/40 p-3 flex items-center justify-between gap-3">
-              <p className="text-xs text-red-200">
-                <strong>Out of credits</strong> — you have used {user.credits_used}/{user.credits_limit === Infinity ? '∞' : user.credits_limit}. Upgrade to continue.
-              </p>
-              <Link to="/dashboard" className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-500 transition-colors">Dashboard</Link>
-            </div>
-          )}
-          {user && engine === ENGINE_SERVER && canUseCredits(user.credits_used, user.credits_limit) && (
-            <div className="mb-4 rounded-xl border border-gray-700 bg-gray-900 p-3 flex items-center gap-2 text-xs text-gray-400">
-              <Shield size={12} className="text-green-500" />
-              Server upscales cost 1 credit each — you have <span className="font-bold text-white">{remainingCredits === Infinity ? 'Unlimited' : remainingCredits}</span> remaining.
-            </div>
-          )}
+          <ToolGateBanner gate={gate} toolLabel="Image Upscaler" onSignIn={() => setShowAuth(true)} />
 
           {engine === ENGINE_LOCAL && localAiSelected && !modelCached && (
-            <div className="mb-4 rounded-xl border border-amber-800/60 bg-amber-950/30 p-3 flex items-start gap-3">
-              <HardDrive size={16} className="text-amber-400 mt-0.5 shrink-0" />
-              <p className="text-[11px] text-amber-200 leading-snug">
+            <div className="mb-4 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/20 p-3 flex items-start gap-3">
+              <HardDrive size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
                 <strong>On-device AI:</strong> the Real-ESRGAN model (~{modelSizeEstimateMB()} MB) will be downloaded once on first run, then cached. Your images never leave this device.
                 {webgpu === false && ' Your browser lacks WebGPU, so inference uses the slower WASM backend — consider Server mode for large images.'}
               </p>
@@ -877,7 +754,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px] gap-5">
-            <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4 md:p-5">
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 md:p-5">
               {items.length === 0 ? (
                 <button
                   type="button"
@@ -887,16 +764,16 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                   onDrop={onDrop}
                   className={`w-full min-h-[260px] md:min-h-[360px] rounded-xl border-2 border-dashed flex flex-col items-center justify-center text-center px-4 transition-colors ${
                     dragOver
-                      ? 'border-pink-500 bg-pink-950/30'
-                      : 'border-gray-700 hover:border-pink-500 hover:bg-gray-800/40'
+                      ? 'border-pink-500 bg-pink-50 dark:bg-pink-900/20'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-pink-400 dark:hover:border-pink-500 hover:bg-gray-50 dark:hover:bg-gray-800/40'
                   }`}
                 >
                   <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-pink-400 to-fuchsia-600 text-white flex items-center justify-center mb-3 shadow-md">
                     <Upload size={20} />
                   </div>
-                  <p className="text-sm font-bold mb-1 text-white">Drop images here or click to browse</p>
-                  <p className="text-[11px] text-gray-400 max-w-md">
-                    PNG, JPG, or WebP · up to {formatBytes(MAX_FILE_BYTES)} each
+                  <p className="text-sm font-bold mb-1">Drop images here or click to browse</p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 max-w-md">
+                    PNG, JPG, or WebP · up to {formatBytes(MAX_FILE_BYTES)} each{hasBatchCap ? ` · ${maxBatchFiles} images per batch` : ''}
                   </p>
                   <input
                     ref={fileInputRef}
@@ -910,24 +787,24 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
               ) : (
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-3">
-                    <p className="text-xs font-bold text-white">
+                    <p className="text-xs font-bold">
                       Queue · {items.length} {items.length === 1 ? 'image' : 'images'}
-                      <span className="text-gray-400 font-normal ml-2">
+                      <span className="text-gray-500 dark:text-gray-400 font-normal ml-2">
                         ({doneCount} done{failedCount ? `, ${failedCount} failed` : ''}{queueCount ? `, ${queueCount} pending` : ''})
                       </span>
                     </p>
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => fileInputRef.current?.click()}
-                        disabled={processing}
-                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-gray-300 hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        disabled={processing || (hasBatchCap && items.length >= maxBatchFiles)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                       >
                         <Plus size={11} /> Add
                       </button>
                       <button
                         onClick={clearAll}
                         disabled={processing}
-                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-red-400 hover:bg-red-950/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                       >
                         <Trash2 size={11} /> Clear
                       </button>
@@ -942,67 +819,67 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-2 stagger-children">
                     {items.map((item) => {
                       const badge = statusBadge(item.status);
                       return (
                         <div
-                          key={item.id}
-                          onClick={() => { if (item.status === 'done' && item.resultUrl) setPreviewId(item.id); }}
-                          className={`flex items-stretch gap-3 p-2 rounded-xl border border-gray-800 ${
-                            item.status === 'done' && item.resultUrl
-                              ? 'cursor-pointer hover:border-pink-700 hover:shadow-sm transition-all'
-                              : 'hover:border-gray-700'
-                          } transition-colors`}
-                          title={item.status === 'done' && item.resultUrl ? 'Click to preview before / after' : undefined}
-                        >
-                          <div className="relative w-14 h-14 shrink-0 rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center">
-                            {(item.resultUrl || item.originalUrl)
-                              ? <img src={item.resultUrl || item.originalUrl} alt={item.file.name} className="w-full h-full object-cover" />
-                              : <ImageIcon size={18} className="text-gray-500" />}
-                            {item.status === 'done' && item.resultUrl && (
-                              <span className="absolute inset-0 grid place-items-center bg-black/30 opacity-0 hover:opacity-100 transition-opacity">
-                                <ZoomIn size={16} className="text-white" />
-                              </span>
-                            )}
-                          </div>
+                            key={item.id}
+                            onClick={() => { if (item.status === 'done' && item.resultUrl) setPreviewId(item.id); }}
+                            className={`flex items-stretch gap-3 p-2 rounded-xl border border-gray-100 dark:border-gray-800 ${
+                              item.status === 'done' && item.resultUrl
+                                ? 'cursor-pointer hover:border-pink-300 dark:hover:border-pink-700 hover:shadow-sm transition-all'
+                                : 'hover:border-gray-200 dark:hover:border-gray-700'
+                            } transition-colors`}
+                            title={item.status === 'done' && item.resultUrl ? 'Click to preview before / after' : undefined}
+                          >
+                            <div className="relative w-14 h-14 shrink-0 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                              {(item.resultUrl || item.originalUrl)
+                                ? <img src={item.resultUrl || item.originalUrl} alt={item.file.name} className="w-full h-full object-cover" />
+                                : <ImageIcon size={18} className="text-gray-400" />}
+                              {item.status === 'done' && item.resultUrl && (
+                                <span className="absolute inset-0 grid place-items-center bg-black/30 opacity-0 hover:opacity-100 transition-opacity">
+                                  <ZoomIn size={16} className="text-white" />
+                                </span>
+                              )}
+                            </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-2">
-                              <p className="text-xs font-medium truncate text-white" title={item.file.name}>{item.file.name}</p>
+                              <p className="text-xs font-medium truncate" title={item.file.name}>{item.file.name}</p>
                               <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider shrink-0 ${badge.cls}`}>
                                 {badge.text}
                               </span>
                             </div>
-                            <p className="text-[10px] text-gray-400 mt-0.5">
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
                               {formatBytes(item.file.size)}
                               {item.resultSize && (
-                                <span className="text-pink-400 font-medium">
+                                <span className="text-pink-600 dark:text-pink-300 font-medium">
                                   {' · '}upscaled {formatBytes(item.resultSize)}
                                 </span>
                               )}
                             </p>
                             {item.status === 'processing' && (
                               <div className="mt-1.5">
-                                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-0.5">
+                                <div className="flex items-center justify-between text-[10px] text-gray-500 dark:text-gray-400 mb-0.5">
                                   <span className="flex items-center gap-1">
                                     <Loader2 size={10} className="animate-spin" /> {item.stage}
                                   </span>
                                   <span>{item.progress}%</span>
                                 </div>
-                                <div className="h-1 rounded-full bg-gray-800 overflow-hidden">
+                                <div className="h-1 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
                                   <div className="h-full bg-gradient-to-r from-pink-400 to-fuchsia-500 transition-all" style={{ width: `${item.progress}%` }} />
                                 </div>
                               </div>
                             )}
                             {item.error && (
-                              <p className="mt-1 text-[10px] text-red-400 line-clamp-2">{item.error}</p>
+                              <p className="mt-1 text-[10px] text-red-600 dark:text-red-400 line-clamp-2">{item.error}</p>
                             )}
                           </div>
                           <div className="flex flex-col items-end justify-center gap-1 shrink-0">
                             {item.status === 'done' && item.resultUrl && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); setPreviewId(item.id); }}
-                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-gray-300 hover:bg-pink-950/40 transition-colors flex items-center gap-1"
+                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300 hover:bg-pink-50 dark:hover:bg-pink-900/20 transition-colors flex items-center gap-1"
                                 title="Preview before / after"
                               >
                                 <Eye size={11} />
@@ -1011,7 +888,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                             {item.resultUrl && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); downloadItem(item); }}
-                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-pink-400 hover:bg-pink-950/40 transition-colors flex items-center gap-1"
+                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-pink-600 dark:text-pink-300 hover:bg-pink-50 dark:hover:bg-pink-900/20 transition-colors flex items-center gap-1"
                                 title={`Download as ${(item.resultExt || fmtChoice.ext).toUpperCase()}`}
                               >
                                 <Download size={11} />
@@ -1020,7 +897,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                             <button
                               onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
                               disabled={processing && item.status === 'processing'}
-                              className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-red-400 hover:bg-red-950/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+                              className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
                               title="Remove from queue"
                             >
                               <X size={11} />
@@ -1034,12 +911,12 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
               )}
             </div>
 
-            <aside className="bg-gray-900 rounded-2xl border border-gray-800 p-4 md:p-5 h-fit lg:sticky lg:top-[72px]">
+            <aside className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 md:p-5 h-fit lg:sticky lg:top-[72px]">
               <div className="flex items-center gap-1.5 text-[10px] font-bold text-green-500 uppercase tracking-[0.15em] mb-3">
                 <Sliders size={11} /> Settings
               </div>
 
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Where to run</p>
+              <p className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Where to run</p>
               <div className="grid grid-cols-2 gap-2 mb-1">
                 {[
                   { id: ENGINE_SERVER, label: 'Server', Icon: Server, note: 'Free tier' },
@@ -1050,12 +927,12 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                   return (
                     <button
                       key={opt.id}
-                      onClick={() => switchEngine(opt.id as Engine)}
+                      onClick={() => switchEngine(opt.id)}
                       disabled={processing}
                       className={`px-2 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all border flex items-center justify-center gap-1.5 ${
                         active
                           ? 'bg-pink-500 border-pink-500 text-white'
-                          : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-pink-500'
+                          : 'bg-gray-50 dark:bg-gray-800/60 border-gray-100 dark:border-gray-800 text-gray-700 dark:text-gray-300 hover:border-pink-400'
                       } ${processing ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       <Icon size={12} />
@@ -1064,9 +941,9 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                   );
                 })}
               </div>
-              <p className="text-[10px] text-gray-400 leading-snug mb-3">{engineNote}</p>
+              <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-snug mb-3">{engineNote}</p>
 
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Mode</p>
+              <p className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Mode</p>
               <div className="grid grid-cols-2 gap-2 mb-1">
                 {activeModes.map((opt) => {
                   const Icon = opt.Icon;
@@ -1079,7 +956,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                       className={`px-2 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all border flex items-center justify-center gap-1.5 ${
                         active
                           ? 'bg-pink-500 border-pink-500 text-white'
-                          : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-pink-500'
+                          : 'bg-gray-50 dark:bg-gray-800/60 border-gray-100 dark:border-gray-800 text-gray-700 dark:text-gray-300 hover:border-pink-400'
                       } ${processing ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       <Icon size={12} />
@@ -1088,11 +965,11 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                   );
                 })}
               </div>
-              <p className="text-[10px] text-gray-400 leading-snug mb-4">
+              <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-snug mb-4">
                 {modeChoice.blurb}
               </p>
 
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Scale</p>
+              <p className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Scale</p>
               <div className="grid grid-cols-5 gap-1.5 mb-2">
                 {SCALE_OPTIONS.map((opt) => {
                   const supported = engine === ENGINE_LOCAL || availableScaleIds.includes(opt.id);
@@ -1105,11 +982,11 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                       className={`px-1 py-2 rounded-lg text-center transition-all border ${
                         scale === opt.id
                           ? 'bg-pink-500 border-pink-500 text-white'
-                          : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-pink-500'
+                          : 'bg-gray-50 dark:bg-gray-800/60 border-gray-100 dark:border-gray-800 text-gray-700 dark:text-gray-300 hover:border-pink-400'
                       } ${(processing || !supported) ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       <p className="text-[11px] font-bold leading-none">{opt.label}</p>
-                      <p className={`text-[8px] mt-0.5 ${scale === opt.id ? 'text-pink-100' : 'text-gray-500'}`}>
+                      <p className={`text-[8px] mt-0.5 ${scale === opt.id ? 'text-pink-100' : 'text-gray-400 dark:text-gray-500'}`}>
                         {opt.blurb}
                       </p>
                     </button>
@@ -1117,11 +994,11 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                 })}
               </div>
               {aiUpscaleNote && (
-                <p className="text-[10px] text-amber-400 leading-snug mb-4">{aiUpscaleNote}</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug mb-4">{aiUpscaleNote}</p>
               )}
               {!aiUpscaleNote && <div className="mb-4" />}
 
-              <div className="flex items-center gap-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
                 <FileImage size={11} /> Format
               </div>
               <div className="grid grid-cols-3 gap-1.5 mb-3">
@@ -1133,11 +1010,11 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                     className={`px-2 py-1.5 rounded-lg text-center transition-all border ${
                       format === fmt.id
                         ? 'bg-pink-500 border-pink-500 text-white'
-                        : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-pink-500'
+                        : 'bg-gray-50 dark:bg-gray-800/60 border-gray-100 dark:border-gray-800 text-gray-700 dark:text-gray-300 hover:border-pink-400'
                     } ${processing ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <p className="text-[11px] font-bold leading-none">{fmt.label}</p>
-                    <p className={`text-[9px] mt-0.5 ${format === fmt.id ? 'text-pink-100' : 'text-gray-500'}`}>
+                    <p className={`text-[9px] mt-0.5 ${format === fmt.id ? 'text-pink-100' : 'text-gray-400 dark:text-gray-500'}`}>
                       {fmt.blurb}
                     </p>
                   </button>
@@ -1147,8 +1024,8 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
               {format !== 'png' && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quality</span>
-                    <span className="text-[11px] font-bold text-white">{quality}%</span>
+                    <span className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Quality</span>
+                    <span className="text-[11px] font-bold text-gray-900 dark:text-white">{quality}%</span>
                   </div>
                   <input
                     type="range"
@@ -1158,7 +1035,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                     value={quality}
                     onChange={(e) => setQuality(Number(e.target.value))}
                     disabled={processing}
-                    className="w-full accent-pink-500"
+                    className="w-full"
                   />
                 </div>
               )}
@@ -1179,7 +1056,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
               {processing && (
                 <button
                   onClick={cancelQueue}
-                  className="w-full mt-2 px-4 py-2.5 rounded-xl border border-red-800 text-red-400 text-xs font-bold uppercase tracking-wider hover:bg-red-950/40 transition-colors flex items-center justify-center gap-2"
+                  className="w-full mt-2 px-4 py-2.5 rounded-xl border border-red-200 dark:border-red-700/60 text-red-600 dark:text-red-400 text-xs font-bold uppercase tracking-wider hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors flex items-center justify-center gap-2"
                 >
                   <StopCircle size={14} /> Stop Queue
                 </button>
@@ -1188,42 +1065,38 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
               {doneCount > 0 && !processing && (
                 <button
                   onClick={downloadAllZip}
-                  className="w-full mt-3 px-4 py-2.5 rounded-xl border border-gray-700 text-gray-300 text-xs font-bold uppercase tracking-wider hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
+                  className="w-full mt-3 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 text-xs font-bold uppercase tracking-wider hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
                 >
                   <Package size={14} />
                   Download ZIP ({doneCount})
                 </button>
               )}
 
-              <div className="mt-4 pt-4 border-t border-gray-800 space-y-2 text-[10px] text-gray-400 leading-relaxed">
+              <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800 space-y-2 text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
                 <p className="flex items-center gap-1.5">
                   <Globe size={11} className="shrink-0" />
-                  <span><strong className="text-gray-300">Server:</strong> Fast (Pillow) or Real-ESRGAN AI Fast / AI Plus / Anime on shared free workers. Scales 2–8×.</span>
+                  <span><strong className="text-gray-700 dark:text-gray-300">Server:</strong> Fast (Pillow) or Real-ESRGAN AI Fast / AI Plus / Anime on shared free workers. Scales 2–8×.</span>
                 </p>
                 <p className="flex items-center gap-1.5">
                   <Cpu size={11} className="shrink-0" />
-                  <span><strong className="text-gray-300">Your PC:</strong> Fast (instant) or Real-ESRGAN AI via onnxruntime — {webgpu ? 'WebGPU' : 'WASM'}{webgpu ? '' : ' (no WebGPU found)'}. Nothing is uploaded.</span>
+                  <span><strong className="text-gray-700 dark:text-gray-300">Your PC:</strong> Fast (instant) or Real-ESRGAN AI via onnxruntime — {webgpu ? 'WebGPU' : 'WASM'}{webgpu ? '' : ' (no WebGPU found)'}. Nothing is uploaded.</span>
                 </p>
                 <p className="flex items-center gap-1.5">
                   <Shield size={11} className="shrink-0" />
-                  <span><strong className="text-gray-300">Privacy:</strong> Server images aren't stored after the job; Your PC images never leave the device.</span>
+                  <span><strong className="text-gray-700 dark:text-gray-300">Privacy:</strong> Server images aren't stored after the job; Your PC images never leave the device.</span>
                 </p>
               </div>
             </aside>
           </div>
         </div>
+        <Footer />
       </main>
 
-      <footer className="border-t border-gray-800 bg-gray-900/50">
-        <div className="mx-auto max-w-[1100px] px-3 md:px-5 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-500">
-          <p>© {new Date().getFullYear()} PixelBoost. All rights reserved.</p>
-          <p>Built by Minhajul Islam</p>
-        </div>
-      </footer>
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
 
       {previewId && (
         <BeforeAfterPreview
-          item={items.find((i) => i.id === previewId) || { file: { name: '' } as unknown as File, status: 'done', resultUrl: '', originalUrl: '', origDims: null, resultDims: null, resultSize: null, resultExt: '', id: '', progress: 0, stage: '', error: '' }}
+          item={items.find((i) => i.id === previewId) || { file: { name: '' }, status: 'done', resultUrl: '', originalUrl: '', origDims: null, resultDims: null, resultSize: null, resultExt: '' }}
           fmtExt={fmtChoice.ext}
           onClose={() => setPreviewId(null)}
         />
