@@ -162,14 +162,23 @@ export async function fetchWithFailover(
   throw lastError || new Error('All servers unavailable');
 }
 
+const API_TOKEN = (import.meta.env as Record<string, string | undefined>).VITE_API_TOKEN || '';
+
 async function fetchFromServer(
   server: Server,
   path: string,
   options: RequestInit
 ): Promise<{ response: Response; server: Server }> {
   const url = `${server.url}${path}`;
+  const headers: Record<string, string> = {
+    ...((options.headers as Record<string, string>) || {}),
+  };
+  if (API_TOKEN && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${API_TOKEN}`;
+  }
   const response = await fetch(url, {
     ...options,
+    headers,
     signal: options.signal || AbortSignal.timeout(120000),
   });
 
