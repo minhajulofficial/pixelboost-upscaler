@@ -2,7 +2,7 @@
 import { Link } from 'react-router-dom';
 import {
   Upload, Download, Trash2, Loader2, Image as ImageIcon,
-  Sparkles, Zap, AlertCircle, Palette, Wand2, Server, Cpu, Shield,
+  Sparkles, Zap, AlertCircle, Palette, Wand2, Server, Cpu,
 } from 'lucide-react';
 import { fetchWithFailover, getServers } from '../services/serverPool';
 import { useCredit } from '../services/authService';
@@ -28,9 +28,6 @@ type ImageItem = {
   error?: string;
   resultDims?: { width: number; height: number };
 };
-
-const ENGINE_SERVER = 'server';
-const ENGINE_LOCAL = 'local';
 
 const SERVER_MODES = [
   { id: 'fast', label: 'Fast', icon: Zap, color: 'text-yellow-500' },
