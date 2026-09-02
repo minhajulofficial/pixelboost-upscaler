@@ -8,6 +8,7 @@ import { fetchWithFailover, getServers } from '../services/serverPool';
 import { useCredit } from '../services/authService';
 import type { User } from '../lib/supabase';
 import { getRemainingCredits, canUseCredits } from '../services/creditService';
+import { isAdmin } from '../services/adminService';
 
 type UpscalerProps = {
   user: User | null;
@@ -42,8 +43,9 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const servers = getServers();
-  const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 10;
-  const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : true;
+  const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 0;
+  const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : false;
+  const isLoggedIn = !!user;
 
   // Cleanup previews on unmount
   useEffect(() => {
@@ -223,6 +225,8 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
           <div className="flex items-center gap-4">
             {user ? (
               <div className="flex items-center gap-4">
+                <Link to="/dashboard" className="text-sm text-gray-300 hover:text-white">Dashboard</Link>
+                {isAdmin(user) && <Link to="/admin" className="text-sm font-semibold text-purple-400 hover:text-purple-300">Admin</Link>}
                 <div className="text-right">
                   <div className="text-sm font-medium text-white">{user.email}</div>
                   <div className="text-xs text-gray-400">
