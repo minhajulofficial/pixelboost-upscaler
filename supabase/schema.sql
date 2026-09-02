@@ -72,18 +72,23 @@ create policy "Users can insert own jobs"
   on upscale_jobs for insert
   with check (auth.uid() = user_id);
 
--- Function to auto-create credits on signup
+-- Function to auto-create credits on signup (bypasses RLS)
 create or replace function handle_new_user()
 returns trigger as $$
 begin
-  insert into user_credits (user_id, tier, credits_limit, credits_used)
-  values (new.id, 'free', 10, 0);
+  insert into public.user_credits (user_id, tier, credits_limit, credits_used)
+  values (new.id, 'free', 10, 0)
+  on conflict (user_id) do nothing;
+  return new;
+exception when others then
+  -- Never block signup if credits insert fails
   return new;
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public;
 
--- Trigger for auto-credits on signup
-create or replace trigger on_auth_user_created
+-- Trigger for auto-credits on signup (drop old first to avoid duplicates)
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
 

@@ -33,14 +33,14 @@ export async function signUpWithEmail(email: string, password: string, fullName?
   });
   if (error) throw error;
 
-  // Create user credits record
+  // Credits are created by DB trigger; this is a fallback with upsert
   if (data.user) {
-    await supabase.from('user_credits').insert({
+    await supabase.from('user_credits').upsert({
       user_id: data.user.id,
       tier: 'free',
       credits_limit: 10,
       credits_used: 0,
-    });
+    }, { onConflict: 'user_id' }).then(() => {}, () => {});
   }
 
   return data;
