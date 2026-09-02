@@ -45,7 +45,6 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const servers = getServers();
   const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 0;
   const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : false;
-  const isLoggedIn = !!user;
 
   // Cleanup previews on unmount
   useEffect(() => {
