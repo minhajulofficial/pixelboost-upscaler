@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Sparkles, LogOut, LayoutDashboard, Shield, Coins, ChevronDown, User } from 'lucide-react';
+import { Sparkles, LogOut, LayoutDashboard, Shield, Coins, ChevronDown } from 'lucide-react';
 import type { User as SupaUser } from '../lib/supabase';
 import { signOut } from '../services/authService';
 import { isAdmin } from '../services/adminService';

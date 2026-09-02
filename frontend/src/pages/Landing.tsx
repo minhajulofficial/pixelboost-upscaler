@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Sparkles, Zap, Shield, Globe, ArrowRight, Check, Star } from 'lucide-react';
 import Topbar from '../components/Topbar';
@@ -54,7 +53,7 @@ export default function Landing({ onAuth, user }: LandingProps) {
                 <ArrowRight size={20} />
               </Link>
               <button
-                onClick={() => setShowAuth(true)}
+                onClick={() => onAuth()}
                 className="flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-800/50 px-8 py-4 text-lg font-semibold text-white transition-all hover:border-gray-600 hover:bg-gray-800"
               >
                 Sign Up Free
@@ -163,7 +162,7 @@ export default function Landing({ onAuth, user }: LandingProps) {
                   ))}
                 </ul>
                 <button
-                  onClick={() => setShowAuth(true)}
+                   onClick={() => onAuth()}
                   className={`w-full rounded-xl py-3 font-semibold transition-all ${
                     tier.id === 'pro'
                       ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white hover:from-violet-500 hover:to-purple-500'

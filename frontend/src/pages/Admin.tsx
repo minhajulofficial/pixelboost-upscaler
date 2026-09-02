@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate } from 'react-router-dom';
-import { Shield, Users, Server, CreditCard, RefreshCw, Search, Crown, Zap } from 'lucide-react';
+import { Navigate } from 'react-router-dom';
+import { Shield, Users, Server, CreditCard, RefreshCw, Search, Zap } from 'lucide-react';
 import Topbar from '../components/Topbar';
 import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
