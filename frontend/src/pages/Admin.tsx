@@ -11,7 +11,7 @@ import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
 import { isAdmin } from '../services/adminService';
 import { supabase } from '../lib/supabase';
-import { TIERS, Tier } from '../services/creditService';
+import { TIERS, Tier, TierConfig } from '../services/creditService';
 import { checkAllServers, getServers } from '../services/serverPool';
 
 type AdminUser = {
@@ -35,14 +35,6 @@ type PaymentEntry = {
   senderNumber: string;
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
-};
-
-type TierConfig = {
-  id: Tier;
-  label: string;
-  credits: number;
-  price: number;
-  features: string[];
 };
 
 type ModelConfig = {
@@ -134,6 +126,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const [editTierLabel, setEditTierLabel] = useState('');
   const [editTierCredits, setEditTierCredits] = useState('');
   const [editTierPrice, setEditTierPrice] = useState('');
+  const [editTierPriceBDT, setEditTierPriceBDT] = useState('');
   const [editTierFeatures, setEditTierFeatures] = useState('');
 
   const [sortBy, setSortBy] = useState<'created_at' | 'credits_used'>('created_at');
@@ -259,6 +252,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
     setEditTierLabel(tier.label);
     setEditTierCredits(String(tier.credits));
     setEditTierPrice(String(tier.price));
+    setEditTierPriceBDT(String(tier.priceBDT));
     setEditTierFeatures(tier.features.join('\n'));
   }
 
@@ -267,13 +261,14 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
     setTierConfigs((prev) =>
       prev.map((t) =>
         t.id === editingTier
-          ? {
-              ...t,
-              label: editTierLabel,
-              credits: Number(editTierCredits),
-              price: Number(editTierPrice),
-              features: editTierFeatures.split('\n').filter(Boolean),
-            }
+           ? {
+               ...t,
+               label: editTierLabel,
+               credits: Number(editTierCredits),
+               price: editTierPrice,
+               priceBDT: Number(editTierPriceBDT),
+               features: editTierFeatures.split('\n').filter(Boolean),
+             }
           : t
       )
     );
@@ -872,11 +867,21 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
                     />
                   </div>
                   <div>
+                    <label className="mb-1 block text-xs text-gray-400">Display Price</label>
+                    <input
+                      type="text"
+                      value={editTierPrice}
+                      onChange={(e) => setEditTierPrice(e.target.value)}
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white focus:border-purple-500 focus:outline-none"
+                      placeholder="$9.99/mo"
+                    />
+                  </div>
+                  <div>
                     <label className="mb-1 block text-xs text-gray-400">Price (BDT)</label>
                     <input
                       type="number"
-                      value={editTierPrice}
-                      onChange={(e) => setEditTierPrice(e.target.value)}
+                      value={editTierPriceBDT}
+                      onChange={(e) => setEditTierPriceBDT(e.target.value)}
                       className="w-full rounded-lg border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white focus:border-purple-500 focus:outline-none"
                     />
                   </div>
