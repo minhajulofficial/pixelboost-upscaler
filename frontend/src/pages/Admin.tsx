@@ -678,10 +678,10 @@ export default function Admin({ user }: { user: User | null }) {
                   filtered.map((u) => (
                     <tr key={u.user_id} className="border-t border-gray-800">
                       <td className="px-4 py-3">
-                        <div className="max-w-[180px] truncate font-mono text-xs text-white">
-                          {u.user_id.slice(0, 8)}…
+                        <div className="max-w-[200px] truncate text-sm font-medium text-white" title={u.email || u.user_id}>
+                          {u.email || '—'}
                         </div>
-                        <div className="text-xs text-gray-500">{u.email || '—'}</div>
+                        <div className="max-w-[200px] truncate font-mono text-[10px] text-gray-500" title={u.user_id}>{u.user_id.slice(0, 8)}…</div>
                       </td>
                       <td className="px-4 py-3">
                         <select
@@ -819,7 +819,10 @@ export default function Admin({ user }: { user: User | null }) {
                           {p.method === 'bkash' ? 'bKash' : 'Nagad'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-white">{(p.user_id || '').slice(0, 8)}…</td>
+                      <td className="px-4 py-3">
+                        <div className="text-sm text-white">{users.find((u) => u.user_id === p.user_id)?.email || '—'}</div>
+                        <div className="font-mono text-[10px] text-gray-500">{(p.user_id || '').slice(0, 8)}…</div>
+                      </td>
                       <td className="px-4 py-3 text-xs text-white">{p.tier}</td>
                       <td className="px-4 py-3 text-xs font-semibold text-white">৳{p.amount}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-400">{p.transaction_id}</td>
