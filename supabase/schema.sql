@@ -160,3 +160,17 @@ insert into site_config (key, value) values
   ('favicon_url', '""'),
   ('footer_text', '"AI-powered image upscaler for microstock contributors."')
 on conflict (key) do nothing;
+
+-- RPC: Get user emails from auth.users (for admin panel)
+create or replace function get_user_emails(uids uuid[])
+returns table(id uuid, email text) as $$
+begin
+  return query
+  select au.id, au.email
+  from auth.users au
+  where au.id = any(uids);
+end;
+$$ language plpgsql security definer set search_path = public;
+
+-- Allow authenticated users to call get_user_emails
+grant execute on function get_user_emails(uuid[]) to authenticated;

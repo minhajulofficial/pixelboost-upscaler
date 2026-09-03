@@ -14,7 +14,6 @@ import { canUseCredits } from '../services/creditService';
 
 type UpscalerProps = {
   user: User | null;
-  onShowAuth: () => void;
 };
 
 type ImageItem = {
@@ -44,7 +43,7 @@ const FORMATS = [
   { id: 'webp', label: 'WebP' },
 ];
 
-export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
+export default function Upscaler({ user }: UpscalerProps) {
   const [images, setImages] = useState<ImageItem[]>([]);
   const [scale, setScale] = useState(2);
   const [mode, setMode] = useState('fast');
@@ -105,7 +104,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
   const handleUpscale = async (item: ImageItem) => {
     if (!canProcess) {
-      onShowAuth();
+      window.location.href = '/login';
       return;
     }
 
@@ -235,7 +234,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
   const handleUpscaleAll = async () => {
     if (!canProcess) {
-      onShowAuth();
+      window.location.href = '/login';
       return;
     }
 
@@ -293,7 +292,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-950">
-      <Topbar user={user} onShowAuth={onShowAuth} />
+      <Topbar user={user} />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-6">

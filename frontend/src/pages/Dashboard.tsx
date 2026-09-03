@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Sparkles, TrendingUp, CheckCircle, CreditCard, Zap,
+  TrendingUp, CheckCircle, CreditCard, Zap,
 } from 'lucide-react';
-import { signOut } from '../services/authService';
+import Topbar from '../components/Topbar';
 import type { User } from '../lib/supabase';
 import { getUserStats, getTiers } from '../services/creditService';
 
@@ -11,6 +11,8 @@ type DashboardProps = {
   user: User;
   onRefresh: () => void;
 };
+
+const TIER_ORDER = ['free', 'pro', 'lifetime'];
 
 export default function Dashboard({ user, onRefresh: _onRefresh }: DashboardProps) {
   const [stats, setStats] = useState({ totalJobs: 0, successfulJobs: 0, successRate: 0, last24h: 0 });
@@ -28,42 +30,20 @@ export default function Dashboard({ user, onRefresh: _onRefresh }: DashboardProp
     }
   }
 
-  async function handleSignOut() {
-    await signOut();
-    window.location.href = '/';
-  }
-
   const remainingCredits = user.credits_limit === Infinity
     ? 'Unlimited'
     : Math.max(0, user.credits_limit - user.credits_used);
   const tiers = getTiers();
 
+  const upgradeTiers = tiers.filter((t) => {
+    const currentIdx = TIER_ORDER.indexOf(user.tier);
+    const tierIdx = TIER_ORDER.indexOf(t.id);
+    return tierIdx > currentIdx;
+  });
+
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
-      {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-gray-200 bg-white/80 backdrop-blur-xl dark:border-gray-800 dark:bg-gray-950/80">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <Link to="/" className="flex items-center gap-2">
-            <Sparkles className="text-green-500" size={24} />
-            <span className="text-xl font-bold">PixelBoost</span>
-          </Link>
-
-          <div className="flex items-center gap-4">
-            <Link
-              to="/upscale"
-              className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500"
-            >
-              Start Upscaling
-            </Link>
-            <button
-              onClick={handleSignOut}
-              className="text-sm text-gray-400 hover:text-white"
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-      </header>
+      <Topbar user={user} />
 
       <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Welcome */}
@@ -126,47 +106,38 @@ export default function Dashboard({ user, onRefresh: _onRefresh }: DashboardProp
         </div>
 
         {/* Upgrade Plans */}
-        <div className="mb-8">
-          <h2 className="mb-4 text-lg font-semibold">Upgrade Plan</h2>
-          <div className="grid gap-4 sm:grid-cols-3">
-            {tiers.map((tier) => (
-              <div
-                key={tier.id}
-                className={`rounded-2xl border p-6 ${
-                  user.tier === tier.id
-                    ? 'border-purple-500 bg-purple-500/10'
-                    : 'border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-800/50'
-                }`}
-              >
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-lg font-bold">{tier.label}</h3>
-                  {user.tier === tier.id && (
-                    <span className="rounded-full bg-green-500 px-3 py-1 text-xs font-semibold text-white">
-                      CURRENT
-                    </span>
-                  )}
-                </div>
-                <div className="mb-4 text-2xl font-bold">{tier.price}</div>
-                <ul className="mb-6 space-y-2">
-                  {tier.features.map((feature, i) => (
-                    <li key={i} className="flex items-center gap-2 text-sm text-gray-300">
-                      <CheckCircle size={14} className="text-green-500" />
-                      {feature}
-                    </li>
-                  ))}
-                </ul>
-                {user.tier !== tier.id && (
+        {upgradeTiers.length > 0 && (
+          <div className="mb-8">
+            <h2 className="mb-4 text-lg font-semibold">Upgrade Plan</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {upgradeTiers.map((tier) => (
+                <div
+                  key={tier.id}
+                  className="rounded-2xl border border-gray-300 bg-gray-100 p-6 dark:border-gray-700 dark:bg-gray-800/50"
+                >
+                  <div className="mb-2">
+                    <h3 className="text-lg font-bold">{tier.label}</h3>
+                  </div>
+                  <div className="mb-4 text-2xl font-bold">{tier.price}</div>
+                  <ul className="mb-6 space-y-2">
+                    {tier.features.map((feature, i) => (
+                      <li key={i} className="flex items-center gap-2 text-sm text-gray-300">
+                        <CheckCircle size={14} className="text-green-500" />
+                        {feature}
+                      </li>
+                    ))}
+                  </ul>
                   <Link
                     to={`/checkout?tier=${tier.id}`}
                     className="block w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 py-3 text-center font-semibold text-white transition-all hover:from-green-400 hover:to-emerald-500"
                   >
                     Upgrade
                   </Link>
-                )}
-              </div>
-            ))}
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Footer */}
         <div className="text-center text-sm text-gray-500">

@@ -6,44 +6,37 @@ import type { User } from '../lib/supabase';
 import { getTiers } from '../services/creditService';
 
 type LandingProps = {
-  onAuth: () => void;
   user: User | null;
 };
 
-export default function Landing({ onAuth, user }: LandingProps) {
+export default function Landing({ user }: LandingProps) {
   const tiers = getTiers();
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
-      <Topbar user={user} onShowAuth={onAuth} />
-      {/* Hero Section */}
+      <Topbar user={user} />
       <section className="relative overflow-hidden">
-        {/* Background gradient */}
         <div className="absolute inset-0 bg-gradient-to-br from-green-600/20 via-emerald-600/10 to-green-600/20" />
         <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-10" />
 
         <div className="relative mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
           <div className="text-center">
-            {/* Badge */}
             <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-green-500/30 bg-green-500/10 px-4 py-2 text-sm text-green-300">
               <Sparkles size={14} />
               AI-Powered Image Upscaling
             </div>
 
-            {/* Title */}
             <h1 className="mb-6 text-5xl font-bold tracking-tight sm:text-6xl lg:text-7xl">
               <span className="bg-gradient-to-r from-green-400 via-emerald-400 to-green-400 bg-clip-text text-transparent">
                 PixelBoost
               </span>
             </h1>
 
-            {/* Subtitle */}
             <p className="mx-auto mb-8 max-w-2xl text-lg text-gray-400 sm:text-xl">
               Upscale images 2x–6x with AI. Free to start. No watermarks.
               <br />
               Perfect for microstock contributors and photographers.
             </p>
 
-            {/* CTA Buttons */}
             <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
               <Link
                 to="/upscale"
@@ -52,15 +45,14 @@ export default function Landing({ onAuth, user }: LandingProps) {
                 Start Upscaling
                 <ArrowRight size={20} />
               </Link>
-              <button
-                onClick={() => onAuth()}
+              <Link
+                to="/signup"
                 className="flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-800/50 px-8 py-4 text-lg font-semibold text-white transition-all hover:border-gray-600 hover:bg-gray-800"
               >
                 Sign Up Free
-              </button>
+              </Link>
             </div>
 
-            {/* Trust badges */}
             <div className="mt-12 flex flex-wrap items-center justify-center gap-8 text-sm text-gray-500">
               <div className="flex items-center gap-2">
                 <Check size={16} className="text-green-500" />
@@ -83,7 +75,6 @@ export default function Landing({ onAuth, user }: LandingProps) {
         </div>
       </section>
 
-      {/* Features Section */}
       <section className="border-t border-gray-800 py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-16 text-center">
@@ -126,7 +117,6 @@ export default function Landing({ onAuth, user }: LandingProps) {
         </div>
       </section>
 
-      {/* Pricing Section */}
       <section className="border-t border-gray-800 py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-16 text-center">
@@ -161,16 +151,16 @@ export default function Landing({ onAuth, user }: LandingProps) {
                     </li>
                   ))}
                 </ul>
-                <button
-                   onClick={() => onAuth()}
-                  className={`w-full rounded-xl py-3 font-semibold transition-all ${
+                <Link
+                  to={user ? `/checkout?tier=${tier.id}` : '/signup'}
+                  className={`block w-full rounded-xl py-3 text-center font-semibold transition-all ${
                     tier.id === 'pro'
                       ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-400 hover:to-emerald-500'
                       : 'border border-gray-600 bg-gray-800 text-white hover:border-gray-500 hover:bg-gray-700'
                   }`}
                 >
-                  Get Started
-                </button>
+                  {user ? 'Get Started' : 'Sign Up Free'}
+                </Link>
               </div>
             ))}
           </div>

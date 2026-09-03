@@ -5,11 +5,11 @@ import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
 import { getTiers } from '../services/creditService';
 
-export default function Pricing({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
+export default function Pricing({ user }: { user: User | null }) {
   const tiers = getTiers();
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
-      <Topbar user={user} onShowAuth={onShowAuth} />
+      <Topbar user={user} />
       <main className="flex-1 px-4 py-12">
         <div className="mx-auto max-w-5xl">
           <div className="mb-10 text-center">

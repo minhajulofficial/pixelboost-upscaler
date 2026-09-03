@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import Topbar from '../components/Topbar';
 import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
 import { getTierConfig, submitPayment, type PaymentMethod } from '../services/creditService';
 import type { Tier } from '../services/creditService';
+import { supabase } from '../lib/supabase';
 
 type MethodOption = {
   id: PaymentMethod;
@@ -17,12 +18,7 @@ const METHODS: MethodOption[] = [
   { id: 'nagad', label: 'Nagad', icon: '💳' },
 ];
 
-const MERCHANT_NUMBERS: Record<string, string> = {
-  bkash: '01XXXXXXXXX (Minhajul Islam)',
-  nagad: '01XXXXXXXXX (Minhajul Islam)',
-};
-
-export default function Checkout({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
+export default function Checkout({ user }: { user: User | null }) {
   const [params] = useSearchParams();
   const tierId = (params.get('tier') || 'pro') as Tier;
   const tier = getTierConfig(tierId);
@@ -33,15 +29,31 @@ export default function Checkout({ user, onShowAuth }: { user: User | null; onSh
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
+  const [paymentNumbers, setPaymentNumbers] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
+        if (data?.value) {
+          const s = data.value as Record<string, unknown>;
+          const pn = s.paymentNumbers as Record<string, string> | undefined;
+          if (pn) setPaymentNumbers(pn);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  const merchantNumber = paymentNumbers[method] || 'Contact admin for number';
 
   if (!user) {
     return (
       <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
-        <Topbar user={user} onShowAuth={onShowAuth} />
+        <Topbar user={user} />
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
             <p className="mb-4 text-gray-500 dark:text-gray-400">Please sign in to purchase credits</p>
-            <button onClick={onShowAuth} className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white">Sign In</button>
+            <Link to="/login" className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white">Sign In</Link>
           </div>
         </div>
         <Footer />
@@ -70,7 +82,7 @@ export default function Checkout({ user, onShowAuth }: { user: User | null; onSh
   if (submitted) {
     return (
       <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
-        <Topbar user={user} onShowAuth={onShowAuth} />
+        <Topbar user={user} />
         <main className="mx-auto w-full max-w-lg flex-1 px-4 py-12">
           <div className="rounded-2xl border border-green-800 bg-white p-8 text-center dark:bg-gray-900">
             <div className="mb-4 text-5xl">✅</div>
@@ -87,7 +99,7 @@ export default function Checkout({ user, onShowAuth }: { user: User | null; onSh
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
-      <Topbar user={user} onShowAuth={onShowAuth} />
+      <Topbar user={user} />
       <main className="mx-auto w-full max-w-lg flex-1 px-4 py-12">
         <h1 className="mb-1 text-2xl font-bold text-gray-900 dark:text-white">Checkout — {tier.label}</h1>
         <p className="mb-6 text-gray-500 dark:text-gray-400">{tier.price} · {tier.credits === 999999 ? 'Unlimited' : `${tier.credits} credits`} · ৳{tier.priceBDT}</p>
@@ -111,7 +123,7 @@ export default function Checkout({ user, onShowAuth }: { user: User | null; onSh
           </div>
 
           <div className="mb-5 rounded-xl border border-yellow-800/50 bg-yellow-50 dark:bg-yellow-900/20 p-3 text-xs text-yellow-700 dark:text-yellow-300">
-            Send money to: {MERCHANT_NUMBERS[method]}
+            Send ৳{tier.priceBDT} to: <strong>{merchantNumber}</strong>
           </div>
 
           <div className="mb-4">

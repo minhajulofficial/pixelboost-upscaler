@@ -1,7 +1,41 @@
+import { useState, useEffect } from 'react';
 import { Sparkles, Mail, Globe, Github } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
+
+type FooterLink = { label: string; url: string; enabled?: boolean; [key: string]: unknown };
 
 export default function Footer() {
+  const [footerLinks, setFooterLinks] = useState<{ platform: FooterLink[]; support: FooterLink[] }>({ platform: [], support: [] });
+  const [footerText, setFooterText] = useState('Built by Minhajul Islam · Powered by CSV Tree');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
+        if (data?.value) {
+          const s = data.value as Record<string, unknown>;
+          if (Array.isArray(s.footerPlatformLinks)) setFooterLinks((prev) => ({ ...prev, platform: s.footerPlatformLinks as FooterLink[] }));
+          if (Array.isArray(s.footerSupportLinks)) setFooterLinks((prev) => ({ ...prev, support: s.footerSupportLinks as FooterLink[] }));
+          if (typeof s.footerText === 'string' && s.footerText.trim()) setFooterText(s.footerText);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  const defaultPlatform: FooterLink[] = [
+    { label: 'Upscale', url: '/upscale' },
+    { label: 'Dashboard', url: '/dashboard' },
+    { label: 'Pricing', url: '/pricing' },
+  ];
+  const defaultSupport: FooterLink[] = [
+    { label: 'Contact', url: 'mailto:minhajulofficial.bd@gmail.com' },
+    { label: 'About', url: '/about' },
+  ];
+
+  const platformLinks = footerLinks.platform.length > 0 ? footerLinks.platform : defaultPlatform;
+  const supportLinks = footerLinks.support.length > 0 ? footerLinks.support : defaultSupport;
+
   return (
     <footer className="mt-auto pt-12 pb-6 px-4">
       <div className="max-w-4xl mx-auto">
@@ -31,22 +65,33 @@ export default function Footer() {
           <div>
             <h4 className="text-[10px] font-bold text-gray-900 dark:text-white uppercase tracking-[0.2em] mb-3">Platform</h4>
             <ul className="space-y-2">
-              <li><Link to="/upscale" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">Upscale</Link></li>
-              <li><Link to="/dashboard" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">Dashboard</Link></li>
-              <li><Link to="/pricing" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">Pricing</Link></li>
+              {platformLinks.filter((l) => l.enabled !== false).map((link, i) => {
+                const href = link.url || '#';
+                return href.startsWith('/') ? (
+                  <li key={i}><Link to={href} className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">{link.label}</Link></li>
+                ) : (
+                  <li key={i}><a href={href} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">{link.label}</a></li>
+                );
+              })}
             </ul>
           </div>
           <div>
             <h4 className="text-[10px] font-bold text-gray-900 dark:text-white uppercase tracking-[0.2em] mb-3">Support</h4>
             <ul className="space-y-2">
-              <li><a href="mailto:minhajulofficial.bd@gmail.com" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">Contact</a></li>
-              <li><Link to="/about" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">About</Link></li>
+              {supportLinks.filter((l) => l.enabled !== false).map((link, i) => {
+                const href = link.url || '#';
+                return href.startsWith('/') ? (
+                  <li key={i}><Link to={href} className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">{link.label}</Link></li>
+                ) : (
+                  <li key={i}><a href={href} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 transition-colors uppercase tracking-wider">{link.label}</a></li>
+                );
+              })}
             </ul>
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 dark:border-gray-800 pt-4">
           <p className="text-[10px] uppercase tracking-wider text-gray-500">
-            Built by <a href="https://github.com/minhajulofficial" target="_blank" rel="noopener noreferrer" className="font-semibold text-green-600 hover:text-green-500 dark:text-green-400 dark:hover:text-green-300">Minhajul Islam</a> · Powered by CSV Tree
+            {footerText}
           </p>
           <p className="text-[10px] uppercase tracking-wider text-gray-500">v1.0 · Operational</p>
         </div>

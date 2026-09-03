@@ -42,6 +42,10 @@ type SiteSettings = {
   faviconUrl: string;
   footerText: string;
   headerLinks: { label: string; url: string }[];
+  footerPlatformLinks: { label: string; url: string }[];
+  footerSupportLinks: { label: string; url: string }[];
+  paymentNumbers: Record<string, string>;
+  googleOnly: boolean;
 };
 
 const TABS = [
@@ -67,6 +71,10 @@ const DEFAULT_SETTINGS: SiteSettings = {
   faviconUrl: '',
   footerText: '© 2026 PixelBoost. All rights reserved.',
   headerLinks: [],
+  footerPlatformLinks: [],
+  footerSupportLinks: [],
+  paymentNumbers: { bkash: '', nagad: '' },
+  googleOnly: false,
 };
 
 async function saveSiteConfig(key: string, value: unknown): Promise<void> {
@@ -76,7 +84,7 @@ async function saveSiteConfig(key: string, value: unknown): Promise<void> {
   if (error) throw error;
 }
 
-export default function Admin({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
+export default function Admin({ user }: { user: User | null }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(true);
@@ -87,13 +95,6 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const [models, setModels] = useState<ModelConfig[]>(DEFAULT_MODELS);
   const [settings, setSettings] = useState<SiteSettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
-
-  const [paymentMethod, setPaymentMethod] = useState<'bkash' | 'nagad'>('bkash');
-  const [paymentUser, setPaymentUser] = useState('');
-  const [paymentTier, setPaymentTier] = useState<Tier>('free');
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentTxId, setPaymentTxId] = useState('');
-  const [paymentSender, setPaymentSender] = useState('');
 
   const [editingTier, setEditingTier] = useState<Tier | null>(null);
   const [editTierLabel, setEditTierLabel] = useState('');
@@ -111,6 +112,8 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const [addUserCredits, setAddUserCredits] = useState('10');
 
   const [newHeaderLink, setNewHeaderLink] = useState({ label: '', url: '' });
+  const [newFooterPlatformLink, setNewFooterPlatformLink] = useState({ label: '', url: '' });
+  const [newFooterSupportLink, setNewFooterSupportLink] = useState({ label: '', url: '' });
 
   if (!user) return <Navigate to="/" replace />;
   if (!isAdmin(user)) return <Navigate to="/upscale" replace />;
@@ -138,7 +141,19 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
       .select('*')
       .order('created_at', { ascending: false })
       .limit(100);
-    setUsers((data as AdminUser[]) || []);
+    const usersList = (data as AdminUser[]) || [];
+    const userIds = usersList.map((u) => u.user_id);
+    if (userIds.length > 0) {
+      try {
+        const { data: authData } = await supabase.rpc('get_user_emails', { uids: userIds });
+        if (authData && Array.isArray(authData)) {
+          const emailMap: Record<string, string> = {};
+          authData.forEach((row: { id: string; email: string }) => { emailMap[row.id] = row.email; });
+          usersList.forEach((u) => { if (emailMap[u.user_id]) u.email = emailMap[u.user_id]; });
+        }
+      } catch {}
+    }
+    setUsers(usersList);
   }
 
   async function loadPayments() {
@@ -269,31 +284,6 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
     }
   }
 
-  async function submitAdminPayment() {
-    if (!paymentUser || !paymentAmount || !paymentTxId || !paymentSender) return;
-    setSaving(true);
-    try {
-      const { error } = await supabase.from('payments').insert({
-        user_id: paymentUser,
-        amount: Number(paymentAmount),
-        method: paymentMethod,
-        tier: paymentTier,
-        transaction_id: paymentTxId,
-        sender_number: paymentSender,
-        status: 'pending',
-      });
-      if (error) throw error;
-      setPaymentAmount('');
-      setPaymentTxId('');
-      setPaymentSender('');
-      await loadPayments();
-    } catch (err) {
-      console.error('Failed to submit payment:', err);
-    } finally {
-      setSaving(false);
-    }
-  }
-
   function startEditTier(tier: TierConfig) {
     setEditingTier(tier.id);
     setEditTierLabel(tier.label);
@@ -348,6 +338,46 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
 
   async function removeHeaderLink(index: number) {
     const updated = { ...settings, headerLinks: settings.headerLinks.filter((_, i) => i !== index) };
+    setSettings(updated);
+    try { await saveSiteConfig('site_settings', updated); } catch {}
+  }
+
+  async function addFooterPlatformLink() {
+    if (!newFooterPlatformLink.label || !newFooterPlatformLink.url) return;
+    const updated = { ...settings, footerPlatformLinks: [...settings.footerPlatformLinks, { ...newFooterPlatformLink }] };
+    setSettings(updated);
+    setNewFooterPlatformLink({ label: '', url: '' });
+    try { await saveSiteConfig('site_settings', updated); } catch {}
+  }
+
+  async function removeFooterPlatformLink(index: number) {
+    const updated = { ...settings, footerPlatformLinks: settings.footerPlatformLinks.filter((_, i) => i !== index) };
+    setSettings(updated);
+    try { await saveSiteConfig('site_settings', updated); } catch {}
+  }
+
+  async function addFooterSupportLink() {
+    if (!newFooterSupportLink.label || !newFooterSupportLink.url) return;
+    const updated = { ...settings, footerSupportLinks: [...settings.footerSupportLinks, { ...newFooterSupportLink }] };
+    setSettings(updated);
+    setNewFooterSupportLink({ label: '', url: '' });
+    try { await saveSiteConfig('site_settings', updated); } catch {}
+  }
+
+  async function removeFooterSupportLink(index: number) {
+    const updated = { ...settings, footerSupportLinks: settings.footerSupportLinks.filter((_, i) => i !== index) };
+    setSettings(updated);
+    try { await saveSiteConfig('site_settings', updated); } catch {}
+  }
+
+  async function updatePaymentNumber(method: string, number: string) {
+    const updated = { ...settings, paymentNumbers: { ...settings.paymentNumbers, [method]: number } };
+    setSettings(updated);
+    try { await saveSiteConfig('site_settings', updated); } catch {}
+  }
+
+  async function toggleGoogleOnly() {
+    const updated = { ...settings, googleOnly: !settings.googleOnly };
     setSettings(updated);
     try { await saveSiteConfig('site_settings', updated); } catch {}
   }
@@ -736,9 +766,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
         <div className="grid gap-4 md:grid-cols-3">
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
             <div className="text-xs text-gray-400">Total Revenue</div>
-            <div className="mt-1 text-2xl font-bold text-white">
-              ৳{approvedRevenue.toLocaleString()}
-            </div>
+            <div className="mt-1 text-2xl font-bold text-white">৳{approvedRevenue.toLocaleString()}</div>
           </div>
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
             <div className="text-xs text-gray-400">Pending Payments</div>
@@ -748,102 +776,6 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
             <div className="text-xs text-gray-400">Total Transactions</div>
             <div className="mt-1 text-2xl font-bold text-white">{payments.length}</div>
           </div>
-        </div>
-
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-          <h3 className="mb-4 text-sm font-semibold text-white">Record Payment</h3>
-          <div className="flex gap-3 mb-4">
-            <button
-              onClick={() => setPaymentMethod('bkash')}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                paymentMethod === 'bkash'
-                  ? 'bg-pink-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:text-white'
-              }`}
-            >
-              bKash
-            </button>
-            <button
-              onClick={() => setPaymentMethod('nagad')}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                paymentMethod === 'nagad'
-                  ? 'bg-orange-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:text-white'
-              }`}
-            >
-              Nagad
-            </button>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-xs text-gray-400">Select User</label>
-              <select
-                value={paymentUser}
-                onChange={(e) => setPaymentUser(e.target.value)}
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
-              >
-                <option value="">— Select —</option>
-                {users.map((u) => (
-                  <option key={u.user_id} value={u.user_id}>
-                    {u.email || u.user_id.slice(0, 12) + '…'} ({u.tier})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-gray-400">Select Tier</label>
-              <select
-                value={paymentTier}
-                onChange={(e) => setPaymentTier(e.target.value as Tier)}
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
-              >
-                {TIERS.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-gray-400">Amount (BDT)</label>
-              <input
-                type="number"
-                value={paymentAmount}
-                onChange={(e) => setPaymentAmount(e.target.value)}
-                placeholder="0"
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-gray-400">Transaction ID</label>
-              <input
-                type="text"
-                value={paymentTxId}
-                onChange={(e) => setPaymentTxId(e.target.value)}
-                placeholder="TRX ID"
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-gray-400">
-                Sender {paymentMethod === 'bkash' ? 'bKash' : 'Nagad'} Number
-              </label>
-              <input
-                type="text"
-                value={paymentSender}
-                onChange={(e) => setPaymentSender(e.target.value)}
-                placeholder="01XXXXXXXXX"
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-              />
-            </div>
-          </div>
-          <button
-            onClick={submitAdminPayment}
-            disabled={saving}
-            className="mt-4 rounded-lg bg-purple-600 px-6 py-2 text-sm font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
-          >
-            {saving ? 'Submitting...' : 'Submit Payment'}
-          </button>
         </div>
 
         <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
@@ -864,67 +796,31 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
               </thead>
               <tbody>
                 {payments.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="px-4 py-12 text-center text-gray-500">
-                      No payment records
-                    </td>
-                  </tr>
+                  <tr><td colSpan={9} className="px-4 py-12 text-center text-gray-500">No payment records</td></tr>
                 ) : (
                   payments.map((p) => (
                     <tr key={p.id} className="border-t border-gray-800">
                       <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                            p.method === 'bkash'
-                              ? 'bg-pink-500/20 text-pink-400'
-                              : 'bg-orange-500/20 text-orange-400'
-                          }`}
-                        >
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${p.method === 'bkash' ? 'bg-pink-500/20 text-pink-400' : 'bg-orange-500/20 text-orange-400'}`}>
                           {p.method === 'bkash' ? 'bKash' : 'Nagad'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-white">
-                        {(p.user_id || '').slice(0, 8)}…
-                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-white">{(p.user_id || '').slice(0, 8)}…</td>
                       <td className="px-4 py-3 text-xs text-white">{p.tier}</td>
-                      <td className="px-4 py-3 text-xs font-semibold text-white">
-                        ৳{p.amount}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                        {p.transaction_id}
-                      </td>
+                      <td className="px-4 py-3 text-xs font-semibold text-white">৳{p.amount}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-400">{p.transaction_id}</td>
                       <td className="px-4 py-3 text-xs text-gray-400">{p.sender_number}</td>
                       <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                            p.status === 'approved'
-                              ? 'bg-green-500/20 text-green-400'
-                              : p.status === 'rejected'
-                              ? 'bg-red-500/20 text-red-400'
-                              : 'bg-yellow-500/20 text-yellow-400'
-                          }`}
-                        >
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${p.status === 'approved' ? 'bg-green-500/20 text-green-400' : p.status === 'rejected' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
                           {p.status.toUpperCase()}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-400">
-                        {new Date(p.created_at).toLocaleDateString()}
-                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{new Date(p.created_at).toLocaleDateString()}</td>
                       <td className="px-4 py-3">
                         {p.status === 'pending' && (
                           <div className="flex gap-1">
-                            <button
-                              onClick={() => approvePayment(p.id)}
-                              className="rounded-lg bg-green-600 px-2 py-1 text-xs text-white hover:bg-green-500"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              onClick={() => rejectPayment(p.id)}
-                              className="rounded-lg bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500"
-                            >
-                              Reject
-                            </button>
+                            <button onClick={() => approvePayment(p.id)} className="rounded-lg bg-green-600 px-2 py-1 text-xs text-white hover:bg-green-500">Approve</button>
+                            <button onClick={() => rejectPayment(p.id)} className="rounded-lg bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500">Reject</button>
                           </div>
                         )}
                       </td>
@@ -1130,129 +1026,116 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
               <input
                 type="text"
                 value={settings.siteName}
-                onChange={(e) =>
-                  setSettings((s) => ({ ...s, siteName: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
+                onChange={(e) => setSettings((s) => ({ ...s, siteName: e.target.value }))}
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none"
               />
             </div>
             <div>
               <label className="mb-1 block text-xs text-gray-400">Primary Color (Hex)</label>
               <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={settings.primaryColor}
-                  onChange={(e) =>
-                    setSettings((s) => ({ ...s, primaryColor: e.target.value }))
-                  }
-                  placeholder="#9333ea"
-                  className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
-                />
-                <div
-                  className="h-10 w-10 shrink-0 rounded-lg border border-gray-700"
-                  style={{ backgroundColor: settings.primaryColor }}
-                />
+                <input type="text" value={settings.primaryColor} onChange={(e) => setSettings((s) => ({ ...s, primaryColor: e.target.value }))} placeholder="#22c55e" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+                <div className="h-10 w-10 shrink-0 rounded-lg border border-gray-700" style={{ backgroundColor: settings.primaryColor }} />
               </div>
             </div>
             <div>
               <label className="mb-1 block text-xs text-gray-400">Logo URL</label>
-              <input
-                type="url"
-                value={settings.logoUrl}
-                onChange={(e) =>
-                  setSettings((s) => ({ ...s, logoUrl: e.target.value }))
-                }
-                placeholder="https://..."
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-              />
+              <input type="url" value={settings.logoUrl} onChange={(e) => setSettings((s) => ({ ...s, logoUrl: e.target.value }))} placeholder="https://..." className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
             </div>
             <div>
               <label className="mb-1 block text-xs text-gray-400">Favicon URL</label>
-              <input
-                type="url"
-                value={settings.faviconUrl}
-                onChange={(e) =>
-                  setSettings((s) => ({ ...s, faviconUrl: e.target.value }))
-                }
-                placeholder="https://..."
-                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-              />
+              <input type="url" value={settings.faviconUrl} onChange={(e) => setSettings((s) => ({ ...s, faviconUrl: e.target.value }))} placeholder="https://..." className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Authentication</h3>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-white">Google-only Login</div>
+              <div className="text-xs text-gray-400">Disable email/password, keep only Google OAuth</div>
+            </div>
+            <button onClick={toggleGoogleOnly} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.googleOnly ? 'bg-green-600' : 'bg-gray-700'}`}>
+              <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${settings.googleOnly ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Payment Numbers</h3>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">bKash Number</label>
+              <input type="text" value={settings.paymentNumbers?.bkash || ''} onChange={(e) => updatePaymentNumber('bkash', e.target.value)} placeholder="01XXXXXXXXX" className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Nagad Number</label>
+              <input type="text" value={settings.paymentNumbers?.nagad || ''} onChange={(e) => updatePaymentNumber('nagad', e.target.value)} placeholder="01XXXXXXXXX" className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
             </div>
           </div>
         </div>
 
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
           <h3 className="mb-4 text-sm font-semibold text-white">Footer Text</h3>
-          <textarea
-            value={settings.footerText}
-            onChange={(e) =>
-              setSettings((s) => ({ ...s, footerText: e.target.value }))
-            }
-            rows={3}
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none"
-          />
+          <textarea value={settings.footerText} onChange={(e) => setSettings((s) => ({ ...s, footerText: e.target.value }))} rows={2} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
         </div>
 
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
           <h3 className="mb-4 text-sm font-semibold text-white">Header Links</h3>
           <div className="mb-3 flex gap-2">
-            <input
-              type="text"
-              value={newHeaderLink.label}
-              onChange={(e) =>
-                setNewHeaderLink((l) => ({ ...l, label: e.target.value }))
-              }
-              placeholder="Label"
-              className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-            />
-            <input
-              type="url"
-              value={newHeaderLink.url}
-              onChange={(e) =>
-                setNewHeaderLink((l) => ({ ...l, url: e.target.value }))
-              }
-              placeholder="URL"
-              className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-            />
-            <button
-              onClick={addHeaderLink}
-              className="rounded-lg bg-purple-600 px-3 py-2 text-sm text-white hover:bg-purple-500"
-            >
-              <Plus size={16} />
-            </button>
+            <input type="text" value={newHeaderLink.label} onChange={(e) => setNewHeaderLink((l) => ({ ...l, label: e.target.value }))} placeholder="Label" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            <input type="url" value={newHeaderLink.url} onChange={(e) => setNewHeaderLink((l) => ({ ...l, url: e.target.value }))} placeholder="URL" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            <button onClick={addHeaderLink} className="rounded-lg bg-green-600 px-3 py-2 text-sm text-white hover:bg-green-500"><Plus size={16} /></button>
           </div>
           <div className="space-y-1">
             {settings.headerLinks.map((link, i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between rounded-lg bg-gray-800 px-3 py-2"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-white">{link.label}</span>
-                  <span className="text-xs text-gray-400">{link.url}</span>
-                </div>
-                <button
-                  onClick={() => removeHeaderLink(i)}
-                  className="text-gray-400 hover:text-red-400"
-                >
-                  <Minus size={14} />
-                </button>
+              <div key={i} className="flex items-center justify-between rounded-lg bg-gray-800 px-3 py-2">
+                <div className="flex items-center gap-2"><span className="text-sm text-white">{link.label}</span><span className="text-xs text-gray-400">{link.url}</span></div>
+                <button onClick={() => removeHeaderLink(i)} className="text-gray-400 hover:text-red-400"><Minus size={14} /></button>
               </div>
             ))}
-            {settings.headerLinks.length === 0 && (
-              <div className="py-3 text-center text-xs text-gray-500">
-                No header links configured
+            {settings.headerLinks.length === 0 && <div className="py-3 text-center text-xs text-gray-500">No header links configured</div>}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Footer — Platform Links</h3>
+          <div className="mb-3 flex gap-2">
+            <input type="text" value={newFooterPlatformLink.label} onChange={(e) => setNewFooterPlatformLink((l) => ({ ...l, label: e.target.value }))} placeholder="Label" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            <input type="text" value={newFooterPlatformLink.url} onChange={(e) => setNewFooterPlatformLink((l) => ({ ...l, url: e.target.value }))} placeholder="/path or https://..." className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            <button onClick={addFooterPlatformLink} className="rounded-lg bg-green-600 px-3 py-2 text-sm text-white hover:bg-green-500"><Plus size={16} /></button>
+          </div>
+          <div className="space-y-1">
+            {settings.footerPlatformLinks.map((link, i) => (
+              <div key={i} className="flex items-center justify-between rounded-lg bg-gray-800 px-3 py-2">
+                <div className="flex items-center gap-2"><span className="text-sm text-white">{link.label}</span><span className="text-xs text-gray-400">{link.url}</span></div>
+                <button onClick={() => removeFooterPlatformLink(i)} className="text-gray-400 hover:text-red-400"><Minus size={14} /></button>
               </div>
-            )}
+            ))}
+            {settings.footerPlatformLinks.length === 0 && <div className="py-3 text-center text-xs text-gray-500">Using defaults</div>}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Footer — Support Links</h3>
+          <div className="mb-3 flex gap-2">
+            <input type="text" value={newFooterSupportLink.label} onChange={(e) => setNewFooterSupportLink((l) => ({ ...l, label: e.target.value }))} placeholder="Label" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            <input type="text" value={newFooterSupportLink.url} onChange={(e) => setNewFooterSupportLink((l) => ({ ...l, url: e.target.value }))} placeholder="/path or https://..." className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+            <button onClick={addFooterSupportLink} className="rounded-lg bg-green-600 px-3 py-2 text-sm text-white hover:bg-green-500"><Plus size={16} /></button>
+          </div>
+          <div className="space-y-1">
+            {settings.footerSupportLinks.map((link, i) => (
+              <div key={i} className="flex items-center justify-between rounded-lg bg-gray-800 px-3 py-2">
+                <div className="flex items-center gap-2"><span className="text-sm text-white">{link.label}</span><span className="text-xs text-gray-400">{link.url}</span></div>
+                <button onClick={() => removeFooterSupportLink(i)} className="text-gray-400 hover:text-red-400"><Minus size={14} /></button>
+              </div>
+            ))}
+            {settings.footerSupportLinks.length === 0 && <div className="py-3 text-center text-xs text-gray-500">Using defaults</div>}
           </div>
         </div>
 
         <div className="flex items-center justify-end">
-          <button
-            onClick={saveSettings}
-            disabled={saving}
-            className="flex items-center gap-2 rounded-xl bg-purple-600 px-6 py-2 text-sm font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
-          >
+          <button onClick={saveSettings} disabled={saving} className="flex items-center gap-2 rounded-xl bg-green-600 px-6 py-2 text-sm font-semibold text-white hover:bg-green-500 disabled:opacity-50">
             <Save size={14} /> {saving ? 'Saving...' : 'Save Settings'}
           </button>
         </div>
@@ -1271,7 +1154,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
-      <Topbar user={user} onShowAuth={onShowAuth} />
+      <Topbar user={user} />
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
         <div className="mb-6 flex items-center gap-3">
           <Shield className="text-green-500" size={24} />
