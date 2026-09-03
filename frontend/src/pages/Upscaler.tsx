@@ -2,7 +2,7 @@
 import { Link } from 'react-router-dom';
 import {
   Upload, Download, Trash2, Loader2, Image as ImageIcon,
-  Sparkles, Zap, AlertCircle, Palette, Wand2, Server, Cpu,
+  Sparkles, Zap, AlertCircle, Palette, Wand2, Server,
   Eye, ArrowLeft,
 } from 'lucide-react';
 import Topbar from '../components/Topbar';
@@ -11,8 +11,6 @@ import { fetchWithFailover, getServers } from '../services/serverPool';
 import { useCredit } from '../services/authService';
 import type { User } from '../lib/supabase';
 import { canUseCredits } from '../services/creditService';
-// @ts-ignore
-import { runLocalUpscale } from '../services/localUpscale';
 
 type UpscalerProps = {
   user: User | null;
@@ -39,11 +37,6 @@ const SERVER_MODES = [
   { id: 'anime', label: 'Anime', icon: Palette, color: 'text-indigo-500' },
 ];
 
-const LOCAL_MODES = [
-  { id: 'fast', label: 'Fast', icon: Zap, color: 'text-yellow-500' },
-  { id: 'ai', label: 'AI', icon: Wand2, color: 'text-purple-500' },
-];
-
 const SCALES = [2, 3, 4, 6, 8];
 const FORMATS = [
   { id: 'png', label: 'PNG' },
@@ -53,7 +46,6 @@ const FORMATS = [
 
 export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const [images, setImages] = useState<ImageItem[]>([]);
-  const [engine, setEngine] = useState<'server' | 'local'>('server');
   const [scale, setScale] = useState(2);
   const [mode, setMode] = useState('fast');
   const [format, setFormat] = useState('png');
@@ -63,7 +55,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const [compareId, setCompareId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const MODES = engine === 'server' ? SERVER_MODES : LOCAL_MODES;
+  const MODES = SERVER_MODES;
 
   const servers = getServers();
   const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : false;
@@ -112,7 +104,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   }, [handleFiles]);
 
   const handleUpscale = async (item: ImageItem) => {
-    if (engine === 'server' && !canProcess) {
+    if (!canProcess) {
       onShowAuth();
       return;
     }
@@ -125,24 +117,10 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
     try {
       let blob: Blob;
-      if (engine === 'local') {
-        // @ts-ignore
-        blob = await runLocalUpscale(item.file, {
-          mode,
-          scale,
-          quality,
-          format,
-          onProgress: (p: number) => {
-            setImages((prev) =>
-              prev.map((img) => (img.id === item.id ? { ...img, progress: p } : img))
-            );
-          },
-        });
-      } else {
-        const server = servers[selectedServer];
-        if (!server) throw new Error('No server available');
+      const server = servers[selectedServer];
+      if (!server) throw new Error('No server available');
 
-        const formData = new FormData();
+      const formData = new FormData();
         formData.append('file', item.file);
         formData.append('scale', String(scale));
         formData.append('format', format === 'webp' ? 'png' : format);
@@ -209,7 +187,6 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
           );
           URL.revokeObjectURL(url);
         }
-      }
 
       const resultPreview = URL.createObjectURL(blob);
       const resultImg = new Image();
@@ -234,7 +211,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
         )
       );
 
-      if (engine === 'server' && user) {
+      if (user) {
         try {
           await useCredit(user.id);
         } catch {
@@ -367,33 +344,8 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                 <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
                   Engine
                 </label>
-                <div className="flex gap-1.5">
-                  <button
-                    onClick={() => {
-                      setEngine('server');
-                      setMode('fast');
-                    }}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                      engine === 'server'
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    }`}
-                  >
-                    <Server size={12} /> Server
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEngine('local');
-                      setMode('fast');
-                    }}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                      engine === 'local'
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    }`}
-                  >
-                    <Cpu size={12} /> Your PC
-                  </button>
+                <div className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white">
+                  <Server size={12} /> Server
                 </div>
               </div>
 
