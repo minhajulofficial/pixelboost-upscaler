@@ -10,7 +10,7 @@ import Footer from '../components/Footer';
 import { fetchWithFailover, getServers } from '../services/serverPool';
 import { useCredit } from '../services/authService';
 import type { User } from '../lib/supabase';
-import { getRemainingCredits, canUseCredits } from '../services/creditService';
+import { canUseCredits } from '../services/creditService';
 // @ts-ignore
 import { runLocalUpscale } from '../services/localUpscale';
 
@@ -66,7 +66,6 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const MODES = engine === 'server' ? SERVER_MODES : LOCAL_MODES;
 
   const servers = getServers();
-  const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 0;
   const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : false;
 
   useEffect(() => {

@@ -49,6 +49,7 @@ export default function Checkout({ user, onShowAuth }: { user: User | null; onSh
   }
 
   async function handleSubmit() {
+    if (!user) return;
     if (!senderNumber.trim() || !transactionId.trim()) {
       setError('Please fill in all fields');
       return;

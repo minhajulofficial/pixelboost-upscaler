@@ -115,8 +115,9 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
       id: t.id as Tier,
       label: t.label,
       credits: t.credits,
-      price: t.price || 0,
-      features: [],
+      price: t.price,
+      priceBDT: t.priceBDT,
+      features: [...t.features],
     }))
   );
   const [models, setModels] = useState<ModelConfig[]>(loadFromStorage('admin_models', DEFAULT_MODELS));
