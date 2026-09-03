@@ -3,12 +3,14 @@ import { Link } from 'react-router-dom';
 import {
   Upload, Download, Trash2, Loader2, Image as ImageIcon,
   Sparkles, Zap, AlertCircle, Palette, Wand2, Server, Cpu,
+  Eye, ArrowLeft,
 } from 'lucide-react';
+import Topbar from '../components/Topbar';
+import Footer from '../components/Footer';
 import { fetchWithFailover, getServers } from '../services/serverPool';
 import { useCredit } from '../services/authService';
 import type { User } from '../lib/supabase';
 import { getRemainingCredits, canUseCredits } from '../services/creditService';
-import { isAdmin } from '../services/adminService';
 // @ts-ignore
 import { runLocalUpscale } from '../services/localUpscale';
 
@@ -26,6 +28,7 @@ type ImageItem = {
   result?: Blob;
   resultPreview?: string;
   error?: string;
+  inputDims?: { width: number; height: number };
   resultDims?: { width: number; height: number };
 };
 
@@ -57,6 +60,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const [quality, setQuality] = useState(95);
   const [processing, setProcessing] = useState(false);
   const [selectedServer, setSelectedServer] = useState(0);
+  const [compareId, setCompareId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const MODES = engine === 'server' ? SERVER_MODES : LOCAL_MODES;
@@ -65,7 +69,6 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   const remainingCredits = user ? getRemainingCredits(user.credits_used, user.credits_limit) : 0;
   const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : false;
 
-  // Cleanup previews on unmount
   useEffect(() => {
     return () => {
       images.forEach((img) => {
@@ -87,6 +90,20 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       }));
 
     setImages((prev) => [...prev, ...newImages]);
+
+    newImages.forEach((item) => {
+      const img = new Image();
+      img.onload = () => {
+        setImages((prev) =>
+          prev.map((i) =>
+            i.id === item.id
+              ? { ...i, inputDims: { width: img.naturalWidth, height: img.naturalHeight } }
+              : i
+          )
+        );
+      };
+      img.src = item.preview;
+    });
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -102,20 +119,26 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
     }
 
     setImages((prev) =>
-      prev.map((img) => (img.id === item.id ? { ...img, status: 'processing', progress: 0 } : img))
+      prev.map((img) =>
+        img.id === item.id ? { ...img, status: 'processing', progress: 0 } : img
+      )
     );
 
     try {
       let blob: Blob;
       if (engine === 'local') {
         // @ts-ignore
-        blob = await runLocalUpscale(item.file, { mode, scale, quality, format, onProgress: (p: number) => {
-          setImages((prev) => prev.map((img) => img.id === item.id ? { ...img, progress: p } : img));
-        }});
-        // handle format transcode if needed (WebP via canvas is inside runLocalUpscale)
-        if (format === 'jpg' && blob.type !== 'image/jpeg') {
-          // runLocalUpscale already encodes format
-        }
+        blob = await runLocalUpscale(item.file, {
+          mode,
+          scale,
+          quality,
+          format,
+          onProgress: (p: number) => {
+            setImages((prev) =>
+              prev.map((img) => (img.id === item.id ? { ...img, progress: p } : img))
+            );
+          },
+        });
       } else {
         const server = servers[selectedServer];
         if (!server) throw new Error('No server available');
@@ -134,20 +157,30 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.detail || errorData.error || `Server error: ${response.status}`);
+          throw new Error(
+            errorData.detail || errorData.error || `Server error: ${response.status}`
+          );
         }
 
         const { id: jobId } = await response.json();
-        // poll job
         let resultBlob: Blob | null = null;
         for (let i = 0; i < 180; i++) {
           await new Promise((r) => setTimeout(r, 2000));
-          const { response: pollRes } = await fetchWithFailover(`/jobs/${jobId}`, { method: 'GET' });
+          const { response: pollRes } = await fetchWithFailover(`/jobs/${jobId}`, {
+            method: 'GET',
+          });
           const data = await pollRes.json();
           const pct = Math.round((data.progress || 0) * 100);
-          setImages((prev) => prev.map((img) => img.id === item.id ? { ...img, progress: pct } : img));
+          setImages((prev) =>
+            prev.map((img) =>
+              img.id === item.id ? { ...img, progress: pct } : img
+            )
+          );
           if (data.status === 'done') {
-            const { response: resRes } = await fetchWithFailover(`/jobs/${jobId}/result`, { method: 'GET' });
+            const { response: resRes } = await fetchWithFailover(
+              `/jobs/${jobId}/result`,
+              { method: 'GET' }
+            );
             resultBlob = await resRes.blob();
             break;
           }
@@ -155,29 +188,36 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
         }
         if (!resultBlob) throw new Error('Job timeout');
         blob = resultBlob;
-        // client-side WebP transcode if requested
+
         if (format === 'webp') {
           const url = URL.createObjectURL(blob);
           const imgEl = new Image();
           imgEl.src = url;
-          await new Promise<void>((res, rej) => { imgEl.onload = () => res(); imgEl.onerror = () => rej(new Error('decode failed')); });
+          await new Promise<void>((res, rej) => {
+            imgEl.onload = () => res();
+            imgEl.onerror = () => rej(new Error('decode failed'));
+          });
           const canvas = document.createElement('canvas');
           canvas.width = imgEl.naturalWidth;
           canvas.height = imgEl.naturalHeight;
           canvas.getContext('2d')!.drawImage(imgEl, 0, 0);
-          blob = await new Promise<Blob>((res, rej) => canvas.toBlob((b) => b ? res(b) : rej(new Error('webp encode failed')), 'image/webp', quality / 100));
+          blob = await new Promise<Blob>((res, rej) =>
+            canvas.toBlob(
+              (b) => (b ? res(b) : rej(new Error('webp encode failed'))),
+              'image/webp',
+              quality / 100
+            )
+          );
           URL.revokeObjectURL(url);
         }
       }
-      const resultPreview = URL.createObjectURL(blob);
 
-      // Get result dimensions
+      const resultPreview = URL.createObjectURL(blob);
       const resultImg = new Image();
       resultImg.src = resultPreview;
       await new Promise<void>((resolve) => {
         resultImg.onload = () => resolve();
       });
-
       const resultDims = { width: resultImg.naturalWidth, height: resultImg.naturalHeight };
 
       setImages((prev) =>
@@ -195,7 +235,6 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
         )
       );
 
-      // Use credit only for server engine
       if (engine === 'server' && user) {
         try {
           await useCredit(user.id);
@@ -207,7 +246,11 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
       setImages((prev) =>
         prev.map((img) =>
           img.id === item.id
-            ? { ...img, status: 'error', error: err instanceof Error ? err.message : 'Upscale failed' }
+            ? {
+                ...img,
+                status: 'error',
+                error: err instanceof Error ? err.message : 'Upscale failed',
+              }
             : img
         )
       );
@@ -273,57 +316,39 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-gray-800 bg-gray-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <Link to="/" className="flex items-center gap-2">
-            <Sparkles className="text-purple-500" size={24} />
-            <span className="text-xl font-bold">PixelBoost</span>
+    <div className="flex min-h-screen flex-col bg-gray-950">
+      <Topbar user={user} onShowAuth={onShowAuth} />
+
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mb-6">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+          >
+            <ArrowLeft size={14} />
+            Back
           </Link>
-
-          <div className="flex items-center gap-4">
-            {user ? (
-              <div className="flex items-center gap-4">
-                <Link to="/dashboard" className="text-sm text-gray-300 hover:text-white">Dashboard</Link>
-                {isAdmin(user) && <Link to="/admin" className="text-sm font-semibold text-purple-400 hover:text-purple-300">Admin</Link>}
-                <div className="text-right">
-                  <div className="text-sm font-medium text-white">{user.email}</div>
-                  <div className="text-xs text-gray-400">
-                    {remainingCredits === Infinity ? 'Unlimited' : `${remainingCredits} credits`}
-                  </div>
-                </div>
-                <img
-                  src={user.avatar_url || `https://ui-avatars.com/api/?name=${user.email}`}
-                  alt=""
-                  className="h-8 w-8 rounded-full"
-                />
-              </div>
-            ) : (
-              <button
-                onClick={onShowAuth}
-                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500"
-              >
-                Sign In
-              </button>
-            )}
-          </div>
+          <h1 className="mt-2 text-2xl font-bold text-white">Upscale Images</h1>
+          <p className="text-sm text-gray-400">
+            Enhance your images with AI upscaling
+          </p>
         </div>
-      </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Upload Zone */}
+        {/* Upload Zone with gradient */}
         <div
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
           onClick={() => fileInputRef.current?.click()}
-          className="mb-8 flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-700 bg-gray-900/50 p-12 transition-colors hover:border-purple-500 hover:bg-gray-900"
+          className="relative mb-8 cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed border-gray-700 p-12 text-center transition-all hover:border-purple-500"
         >
-          <Upload size={48} className="mb-4 text-gray-500" />
-          <p className="mb-2 text-lg font-medium text-gray-300">
-            Drop images here or click to upload
-          </p>
-          <p className="text-sm text-gray-500">JPG, PNG up to 20MB</p>
+          <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 via-transparent to-violet-500/10" />
+          <div className="relative">
+            <Upload size={48} className="mx-auto mb-4 text-gray-500" />
+            <p className="mb-2 text-lg font-medium text-gray-300">
+              Drop images here or click to upload
+            </p>
+            <p className="text-sm text-gray-500">JPG, PNG, WebP up to 20MB</p>
+          </div>
           <input
             ref={fileInputRef}
             type="file"
@@ -334,56 +359,85 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
           />
         </div>
 
-        {/* Settings Bar — full CSV Tree models */}
+        {/* Settings Bar */}
         {images.length > 0 && (
-          <div className="mb-8 rounded-2xl border border-gray-800 bg-gray-900/50 p-6">
-            <div className="flex flex-wrap items-center gap-6">
-              {/* Where to run */}
+          <div className="mb-8 rounded-2xl border border-gray-800 bg-gray-900/50 p-5">
+            <div className="flex flex-wrap items-center gap-5">
+              {/* Engine */}
               <div>
-                <label className="mb-2 block text-xs font-medium text-gray-400">Where to run</label>
-                <div className="flex gap-2">
-                  <button onClick={() => { setEngine('server'); setMode('fast'); }} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium ${engine === 'server' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
-                    <Server size={14} /> Server
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                  Engine
+                </label>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => {
+                      setEngine('server');
+                      setMode('fast');
+                    }}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                      engine === 'server'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    <Server size={12} /> Server
                   </button>
-                  <button onClick={() => { setEngine('local'); setMode('fast'); }} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium ${engine === 'local' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
-                    <Cpu size={14} /> Your PC
+                  <button
+                    onClick={() => {
+                      setEngine('local');
+                      setMode('fast');
+                    }}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                      engine === 'local'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    <Cpu size={12} /> Your PC
                   </button>
                 </div>
-                <p className="mt-1 max-w-[260px] text-[10px] leading-relaxed text-gray-500">
-                  {engine === 'server' ? 'Images are sent to the PixelBoost server. Best for 8×.' : 'Nothing is uploaded. Runs in your browser.'}
-                </p>
               </div>
+
+              {/* Divider */}
+              <div className="h-8 w-px bg-gray-800" />
 
               {/* Mode */}
               <div>
-                <label className="mb-2 block text-xs font-medium text-gray-400">Mode</label>
-                <div className="flex gap-2 flex-wrap">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                  Mode
+                </label>
+                <div className="flex gap-1.5">
                   {MODES.map((m) => (
                     <button
                       key={m.id}
                       onClick={() => setMode(m.id)}
-                      className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                         mode === m.id
                           ? 'bg-purple-600 text-white'
                           : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                       }`}
                     >
-                      <m.icon size={14} className={m.color} />
+                      <m.icon size={12} className={m.color} />
                       {m.label}
                     </button>
                   ))}
                 </div>
               </div>
 
+              {/* Divider */}
+              <div className="h-8 w-px bg-gray-800" />
+
               {/* Scale */}
               <div>
-                <label className="mb-2 block text-xs font-medium text-gray-400">Scale</label>
-                <div className="flex gap-2">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                  Scale
+                </label>
+                <div className="flex gap-1.5">
                   {SCALES.map((s) => (
                     <button
                       key={s}
                       onClick={() => setScale(s)}
-                      className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                      className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                         scale === s
                           ? 'bg-purple-600 text-white'
                           : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
@@ -395,12 +449,25 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                 </div>
               </div>
 
+              {/* Divider */}
+              <div className="h-8 w-px bg-gray-800" />
+
               {/* Format */}
               <div>
-                <label className="mb-2 block text-xs font-medium text-gray-400">Format</label>
-                <div className="flex gap-2">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                  Format
+                </label>
+                <div className="flex gap-1.5">
                   {FORMATS.map((f) => (
-                    <button key={f.id} onClick={() => setFormat(f.id)} className={`rounded-lg px-3 py-2 text-sm font-medium ${format === f.id ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
+                    <button
+                      key={f.id}
+                      onClick={() => setFormat(f.id)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                        format === f.id
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                      }`}
+                    >
                       {f.label}
                     </button>
                   ))}
@@ -409,41 +476,58 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
               {/* Quality */}
               {(format === 'jpg' || format === 'webp') && (
-                <div className="min-w-[140px]">
-                  <label className="mb-2 block text-xs font-medium text-gray-400">Quality {quality}%</label>
-                  <input type="range" min={50} max={100} value={quality} onChange={(e) => setQuality(Number(e.target.value))} className="w-full accent-purple-600" />
-                </div>
+                <>
+                  <div className="h-8 w-px bg-gray-800" />
+                  <div className="min-w-[120px]">
+                    <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                      Quality {quality}%
+                    </label>
+                    <input
+                      type="range"
+                      min={50}
+                      max={100}
+                      value={quality}
+                      onChange={(e) => setQuality(Number(e.target.value))}
+                      className="w-full accent-purple-600"
+                    />
+                  </div>
+                </>
               )}
 
-              {/* Server */}
+              {/* Server Selector */}
               {servers.length > 1 && (
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-gray-400">Server</label>
-                  <select
-                    value={selectedServer}
-                    onChange={(e) => setSelectedServer(Number(e.target.value))}
-                    className="rounded-lg bg-gray-800 px-4 py-2 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                  >
-                    {servers.map((s, i) => (
-                      <option key={i} value={i}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <>
+                  <div className="h-8 w-px bg-gray-800" />
+                  <div>
+                    <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                      Server
+                    </label>
+                    <select
+                      value={selectedServer}
+                      onChange={(e) => setSelectedServer(Number(e.target.value))}
+                      className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-300 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    >
+                      {servers.map((s, i) => (
+                        <option key={i} value={i}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
               )}
 
               {/* Actions */}
-              <div className="ml-auto flex gap-3">
+              <div className="ml-auto flex gap-2">
                 <button
                   onClick={handleUpscaleAll}
                   disabled={processing || images.every((img) => img.status !== 'pending')}
-                  className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 px-6 py-3 font-semibold text-white transition-all hover:from-violet-500 hover:to-purple-500 disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-2 text-sm font-semibold text-white transition-all hover:from-violet-500 hover:to-purple-500 disabled:opacity-50"
                 >
                   {processing ? (
-                    <Loader2 size={18} className="animate-spin" />
+                    <Loader2 size={16} className="animate-spin" />
                   ) : (
-                    <Sparkles size={18} />
+                    <Sparkles size={16} />
                   )}
                   Upscale All
                 </button>
@@ -451,16 +535,16 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                 {images.some((img) => img.result) && (
                   <button
                     onClick={handleDownloadAll}
-                    className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 font-semibold text-white transition-colors hover:bg-emerald-500"
+                    className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
                   >
-                    <Download size={18} />
+                    <Download size={16} />
                     ZIP
                   </button>
                 )}
 
                 <button
                   onClick={handleClear}
-                  className="rounded-xl border border-gray-700 px-6 py-3 font-semibold text-gray-300 transition-colors hover:border-rose-500 hover:text-rose-400"
+                  className="rounded-xl border border-gray-700 px-5 py-2 text-sm font-semibold text-gray-300 transition-colors hover:border-rose-500 hover:text-rose-400"
                 >
                   Clear
                 </button>
@@ -475,33 +559,71 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
             {images.map((item) => (
               <div
                 key={item.id}
-                className="group relative overflow-hidden rounded-2xl border border-gray-800 bg-gray-900"
+                className="group relative overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 transition-all duration-200 hover:border-gray-700 hover:shadow-lg hover:shadow-purple-500/5"
               >
                 {/* Preview */}
                 <div className="relative aspect-square">
-                  {item.resultPreview ? (
+                  {item.status === 'done' && item.resultPreview && compareId === item.id ? (
+                    <CompareSlider
+                      beforeSrc={item.preview}
+                      afterSrc={item.resultPreview}
+                    />
+                  ) : item.resultPreview ? (
                     <div className="flex h-full">
                       <img
                         src={item.preview}
                         alt=""
                         className="h-full w-1/2 object-cover opacity-60"
                       />
-                      <img src={item.resultPreview} alt="" className="h-full w-1/2 object-cover" />
+                      <img
+                        src={item.resultPreview}
+                        alt=""
+                        className="h-full w-1/2 object-cover"
+                      />
                     </div>
                   ) : (
-                    <img src={item.preview} alt="" className="h-full w-full object-cover" />
+                    <img
+                      src={item.preview}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
                   )}
 
-                  {/* Status overlay */}
+                  {/* Processing overlay with progress bar */}
                   {item.status === 'processing' && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-                      <Loader2 size={32} className="animate-spin text-purple-500" />
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60">
+                      <div className="mb-3 h-2 w-3/4 overflow-hidden rounded-full bg-gray-700">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-violet-500 to-purple-500 transition-all duration-300"
+                          style={{ width: `${item.progress}%` }}
+                        />
+                      </div>
+                      <span className="text-sm font-semibold text-white">
+                        {item.progress}%
+                      </span>
                     </div>
                   )}
+
                   {item.status === 'error' && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/60">
                       <AlertCircle size={32} className="text-red-500" />
                     </div>
+                  )}
+
+                  {/* Compare button */}
+                  {item.status === 'done' && item.resultPreview && (
+                    <button
+                      onClick={() =>
+                        setCompareId(compareId === item.id ? null : item.id)
+                      }
+                      className={`absolute left-2 top-2 rounded-full p-1.5 transition-colors ${
+                        compareId === item.id
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-black/60 text-white opacity-0 group-hover:opacity-100 hover:bg-purple-600'
+                      }`}
+                    >
+                      <Eye size={14} />
+                    </button>
                   )}
 
                   {/* Remove button */}
@@ -515,17 +637,27 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
 
                 {/* Info */}
                 <div className="p-3">
-                  <div className="mb-2 flex items-center justify-between">
+                  <div className="mb-1 flex items-center justify-between">
                     <span className="truncate text-sm font-medium text-gray-300">
                       {item.file.name}
                     </span>
-                    <span className="ml-2 text-xs text-gray-500">
+                    <span className="ml-2 shrink-0 text-xs text-gray-500">
                       {(item.file.size / 1024 / 1024).toFixed(1)}MB
                     </span>
                   </div>
 
+                  {/* Size display */}
+                  {item.inputDims && (
+                    <p className="mb-1 text-[11px] text-gray-500">
+                      {item.inputDims.width}×{item.inputDims.height}
+                      {item.status === 'done' && item.resultDims
+                        ? ` → ${item.resultDims.width}×${item.resultDims.height}`
+                        : ` → ${item.inputDims.width * scale}×${item.inputDims.height * scale}`}
+                    </p>
+                  )}
+
                   {item.error && (
-                    <p className="mb-2 text-xs text-red-400">{item.error}</p>
+                    <p className="mb-1 text-xs text-red-400">{item.error}</p>
                   )}
 
                   {/* Actions */}
@@ -533,7 +665,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                     {item.status === 'pending' && (
                       <button
                         onClick={() => handleUpscale(item)}
-                        className="flex-1 rounded-lg bg-purple-600 py-2 text-sm font-medium text-white hover:bg-purple-500"
+                        className="flex-1 rounded-lg bg-purple-600 py-1.5 text-xs font-medium text-white hover:bg-purple-500"
                       >
                         Upscale
                       </button>
@@ -541,7 +673,7 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
                     {item.status === 'done' && (
                       <button
                         onClick={() => handleDownload(item)}
-                        className="flex-1 rounded-lg bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                        className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
                       >
                         Download
                       </button>
@@ -561,6 +693,103 @@ export default function Upscaler({ user, onShowAuth }: UpscalerProps) {
           </div>
         )}
       </main>
+
+      <Footer />
+    </div>
+  );
+}
+
+function CompareSlider({
+  beforeSrc,
+  afterSrc,
+}: {
+  beforeSrc: string;
+  afterSrc: string;
+}) {
+  const [pos, setPos] = useState(50);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  const handleMove = useCallback((clientX: number) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const pct = Math.max(0, Math.min(100, (x / rect.width) * 100));
+    setPos(pct);
+  }, []);
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      dragging.current = true;
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      handleMove(e.clientX);
+    },
+    [handleMove]
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragging.current) return;
+      handleMove(e.clientX);
+    },
+    [handleMove]
+  );
+
+  const onPointerUp = useCallback(() => {
+    dragging.current = false;
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative h-full w-full cursor-ew-resize select-none overflow-hidden"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+    >
+      {/* After (full background) */}
+      <img
+        src={afterSrc}
+        alt="After"
+        className="absolute inset-0 h-full w-full object-cover"
+        draggable={false}
+      />
+
+      {/* Before (clipped) */}
+      <div
+        className="absolute inset-0 overflow-hidden"
+        style={{ width: `${pos}%` }}
+      >
+        <img
+          src={beforeSrc}
+          alt="Before"
+          className="h-full w-full object-cover"
+          style={{ width: `${containerRef.current?.offsetWidth || 1000}px` }}
+          draggable={false}
+        />
+      </div>
+
+      {/* Divider line */}
+      <div
+        className="absolute top-0 bottom-0 w-0.5 bg-white shadow-lg"
+        style={{ left: `${pos}%`, transform: 'translateX(-50%)' }}
+      >
+        {/* Drag handle */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-lg">
+          <div className="flex gap-0.5">
+            <div className="h-3 w-0.5 rounded-full bg-gray-400" />
+            <div className="h-3 w-0.5 rounded-full bg-gray-400" />
+          </div>
+        </div>
+      </div>
+
+      {/* Labels */}
+      <div className="absolute bottom-3 left-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
+        Before
+      </div>
+      <div className="absolute bottom-3 right-3 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white">
+        After
+      </div>
     </div>
   );
 }

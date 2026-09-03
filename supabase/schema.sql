@@ -101,3 +101,62 @@ begin
   where tier = 'free' and credits_used >= credits_limit;
 end;
 $$ language plpgsql;
+
+-- Payments table (bKash/Nagad)
+create table if not exists payments (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references auth.users(id) on delete cascade not null,
+  amount numeric not null,
+  currency text default 'BDT' not null,
+  method text check (method in ('bkash', 'nagad', 'stripe', 'paypal')) not null,
+  transaction_id text,
+  sender_number text,
+  tier text not null,
+  status text check (status in ('pending', 'approved', 'rejected')) default 'pending' not null,
+  admin_note text,
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null
+);
+
+-- Site config table
+create table if not exists site_config (
+  id uuid default uuid_generate_v4() primary key,
+  key text not null unique,
+  value jsonb not null,
+  updated_at timestamp with time zone default now() not null
+);
+
+-- Indexes for new tables
+create index if not exists idx_payments_user_id on payments(user_id);
+create index if not exists idx_payments_status on payments(status);
+create index if not exists idx_payments_created_at on payments(created_at desc);
+create index if not exists idx_site_config_key on site_config(key);
+
+-- RLS for payments
+alter table payments enable row level security;
+
+-- Users can read their own payments
+create policy "Users can read own payments"
+  on payments for select
+  using (auth.uid() = user_id);
+
+-- Users can insert their own payments
+create policy "Users can insert own payments"
+  on payments for insert
+  with check (auth.uid() = user_id);
+
+-- Site config is readable by everyone, writable by service role
+alter table site_config enable row level security;
+
+create policy "Anyone can read site_config"
+  on site_config for select
+  using (true);
+
+-- Insert default site config
+insert into site_config (key, value) values
+  ('site_name', '"PixelBoost"'),
+  ('primary_color', '"#7c3aed"'),
+  ('logo_url', '""'),
+  ('favicon_url', '""'),
+  ('footer_text', '"AI-powered image upscaler for microstock contributors."')
+on conflict (key) do nothing;
