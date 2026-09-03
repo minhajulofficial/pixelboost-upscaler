@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { signOut } from '../services/authService';
 import type { User } from '../lib/supabase';
-import { getUserStats, TIERS, upgradeTier, Tier } from '../services/creditService';
+import { getUserStats, getTiers, upgradeTier, Tier } from '../services/creditService';
 
 type DashboardProps = {
   user: User;
@@ -49,6 +49,7 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
   const remainingCredits = user.credits_limit === Infinity
     ? 'Unlimited'
     : Math.max(0, user.credits_limit - user.credits_used);
+  const tiers = getTiers();
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -141,7 +142,7 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
         <div className="mb-8">
           <h2 className="mb-4 text-lg font-semibold">Upgrade Plan</h2>
           <div className="grid gap-4 sm:grid-cols-3">
-            {TIERS.map((tier) => (
+            {tiers.map((tier) => (
               <div
                 key={tier.id}
                 className={`rounded-2xl border p-6 ${

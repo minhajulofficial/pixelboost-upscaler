@@ -3,7 +3,7 @@ import { Sparkles, Zap, Shield, Globe, ArrowRight, Check, Star } from 'lucide-re
 import Topbar from '../components/Topbar';
 import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
-import { TIERS } from '../services/creditService';
+import { getTiers } from '../services/creditService';
 
 type LandingProps = {
   onAuth: () => void;
@@ -11,7 +11,7 @@ type LandingProps = {
 };
 
 export default function Landing({ onAuth, user }: LandingProps) {
-
+  const tiers = getTiers();
   return (
     <div className="flex min-h-screen flex-col bg-gray-950 text-white">
       <Topbar user={user} onShowAuth={onAuth} />
@@ -135,7 +135,7 @@ export default function Landing({ onAuth, user }: LandingProps) {
           </div>
 
           <div className="grid gap-8 md:grid-cols-3">
-            {TIERS.map((tier) => (
+            {tiers.map((tier) => (
               <div
                 key={tier.id}
                 className={`relative rounded-2xl border p-8 ${

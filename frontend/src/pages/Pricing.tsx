@@ -3,9 +3,10 @@ import { Check } from 'lucide-react';
 import Topbar from '../components/Topbar';
 import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
-import { TIERS } from '../services/creditService';
+import { getTiers } from '../services/creditService';
 
 export default function Pricing({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
+  const tiers = getTiers();
   return (
     <div className="flex min-h-screen flex-col bg-gray-950">
       <Topbar user={user} onShowAuth={onShowAuth} />
@@ -16,7 +17,7 @@ export default function Pricing({ user, onShowAuth }: { user: User | null; onSho
             <p className="mt-2 text-gray-400">Start free. Pay only when you need more.</p>
           </div>
           <div className="grid gap-6 md:grid-cols-3">
-            {TIERS.map((tier) => (
+            {tiers.map((tier) => (
               <div key={tier.id} className={`rounded-2xl border p-6 ${tier.id === 'pro' ? 'border-purple-500 bg-purple-500/10' : 'border-gray-800 bg-gray-900'}`}>
                 <h3 className="text-lg font-bold text-white">{tier.label}</h3>
                 <div className="mt-2 text-3xl font-bold text-white">{tier.price}</div>

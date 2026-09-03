@@ -102,16 +102,18 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const [servers, setServers] = useState(getServers());
   const [activeTab, setActiveTab] = useState('dashboard');
   const [payments, setPayments] = useState<PaymentEntry[]>(loadFromStorage('admin_payments', []));
-  const [tierConfigs, setTierConfigs] = useState<TierConfig[]>(
-    TIERS.map((t) => ({
+  const [tierConfigs, setTierConfigs] = useState<TierConfig[]>(() => {
+    const saved = loadFromStorage<TierConfig[] | null>('admin_tier_configs', null);
+    if (saved && saved.length === TIERS.length) return saved;
+    return TIERS.map((t) => ({
       id: t.id as Tier,
       label: t.label,
       credits: t.credits,
       price: t.price,
       priceBDT: t.priceBDT,
       features: [...t.features],
-    }))
-  );
+    }));
+  });
   const [models, setModels] = useState<ModelConfig[]>(loadFromStorage('admin_models', DEFAULT_MODELS));
   const [settings, setSettings] = useState<SiteSettings>(loadFromStorage('admin_settings', DEFAULT_SETTINGS));
 
@@ -132,6 +134,11 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const [sortBy, setSortBy] = useState<'created_at' | 'credits_used'>('created_at');
   const [sortAsc, setSortAsc] = useState(false);
 
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [addUserEmail, setAddUserEmail] = useState('');
+  const [addUserTier, setAddUserTier] = useState<Tier>('free');
+  const [addUserCredits, setAddUserCredits] = useState('10');
+
   const [newHeaderLink, setNewHeaderLink] = useState({ label: '', url: '' });
 
   if (!user) return <Navigate to="/" replace />;
@@ -145,6 +152,10 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   useEffect(() => {
     saveToStorage('admin_payments', payments);
   }, [payments]);
+
+  useEffect(() => {
+    saveToStorage('admin_tier_configs', tierConfigs);
+  }, [tierConfigs]);
 
   useEffect(() => {
     saveToStorage('admin_models', models);
@@ -163,6 +174,25 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
       .limit(100);
     setUsers((data as AdminUser[]) || []);
     setLoading(false);
+  }
+
+  async function addUser() {
+    if (!addUserEmail.trim()) return;
+    const cfg = TIERS.find((t) => t.id === addUserTier)!;
+    const limit = addUserCredits.trim() ? Number(addUserCredits) : cfg.credits;
+    const { error } = await supabase.from('user_credits').insert({
+      user_id: addUserEmail.trim(),
+      tier: addUserTier,
+      credits_limit: limit,
+      credits_used: 0,
+    });
+    if (error) {
+      alert(error.message.includes('duplicate') ? 'User already exists' : error.message);
+      return;
+    }
+    setShowAddUser(false);
+    setAddUserEmail('');
+    loadUsers();
   }
 
   async function refreshServers() {
@@ -493,7 +523,60 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
           >
             <RefreshCw size={16} />
           </button>
+          <button
+            onClick={() => setShowAddUser(!showAddUser)}
+            className="flex items-center gap-1.5 rounded-xl bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700"
+          >
+            <Plus size={14} /> Add User
+          </button>
         </div>
+
+        {showAddUser && (
+          <div className="flex flex-wrap items-end gap-3 rounded-xl border border-purple-500/30 bg-purple-500/5 p-3">
+            <div className="flex-1 min-w-[200px]">
+              <label className="mb-1 block text-xs text-gray-400">User ID (UUID from Supabase Auth)</label>
+              <input
+                value={addUserEmail}
+                onChange={(e) => setAddUserEmail(e.target.value)}
+                placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000"
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-purple-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Tier</label>
+              <select
+                value={addUserTier}
+                onChange={(e) => setAddUserTier(e.target.value as Tier)}
+                className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+              >
+                {TIERS.map((t) => (
+                  <option key={t.id} value={t.id}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Starting Credits</label>
+              <input
+                type="number"
+                value={addUserCredits}
+                onChange={(e) => setAddUserCredits(e.target.value)}
+                className="w-24 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+              />
+            </div>
+            <button
+              onClick={addUser}
+              className="rounded-lg bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-700"
+            >
+              Create
+            </button>
+            <button
+              onClick={() => setShowAddUser(false)}
+              className="rounded-lg bg-gray-800 px-4 py-1.5 text-sm text-gray-400 hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
 
         <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
           <div className="overflow-x-auto">

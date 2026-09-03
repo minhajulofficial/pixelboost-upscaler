@@ -56,7 +56,22 @@ export const TIERS: TierConfig[] = [
   },
 ];
 
+export function getTiers(): TierConfig[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem('admin_tier_configs') || '[]');
+    if (Array.isArray(saved) && saved.length === TIERS.length) return saved;
+  } catch {}
+  return TIERS;
+}
+
 export function getTierConfig(tier: Tier): TierConfig {
+  try {
+    const saved = JSON.parse(localStorage.getItem('admin_tier_configs') || '[]');
+    if (Array.isArray(saved) && saved.length === TIERS.length) {
+      const found = saved.find((t: TierConfig) => t.id === tier);
+      if (found) return found;
+    }
+  } catch {}
   return TIERS.find((t) => t.id === tier) || TIERS[0];
 }
 

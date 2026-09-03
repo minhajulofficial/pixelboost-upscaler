@@ -3,7 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import Topbar from '../components/Topbar';
 import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
-import { TIERS, submitPayment, type PaymentMethod } from '../services/creditService';
+import { getTierConfig, submitPayment, type PaymentMethod } from '../services/creditService';
+import type { Tier } from '../services/creditService';
 
 type MethodOption = {
   id: PaymentMethod;
@@ -23,8 +24,8 @@ const MERCHANT_NUMBERS: Record<string, string> = {
 
 export default function Checkout({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
   const [params] = useSearchParams();
-  const tierId = params.get('tier') || 'pro';
-  const tier = TIERS.find((t) => t.id === tierId) || TIERS[1];
+  const tierId = (params.get('tier') || 'pro') as Tier;
+  const tier = getTierConfig(tierId);
 
   const [method, setMethod] = useState<PaymentMethod>('bkash');
   const [senderNumber, setSenderNumber] = useState('');
