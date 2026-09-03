@@ -69,14 +69,6 @@ const DEFAULT_SETTINGS: SiteSettings = {
   headerLinks: [],
 };
 
-async function loadSiteConfig<T>(key: string, fallback: T): Promise<T> {
-  try {
-    const { data } = await supabase.from('site_config').select('value').eq('key', key).single();
-    if (data?.value) return data.value as T;
-  } catch {}
-  return fallback;
-}
-
 async function saveSiteConfig(key: string, value: unknown): Promise<void> {
   const { error } = await supabase
     .from('site_config')

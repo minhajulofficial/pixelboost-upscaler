@@ -12,7 +12,7 @@ type DashboardProps = {
   onRefresh: () => void;
 };
 
-export default function Dashboard({ user, onRefresh }: DashboardProps) {
+export default function Dashboard({ user, onRefresh: _onRefresh }: DashboardProps) {
   const [stats, setStats] = useState({ totalJobs: 0, successfulJobs: 0, successRate: 0, last24h: 0 });
 
   useEffect(() => {
