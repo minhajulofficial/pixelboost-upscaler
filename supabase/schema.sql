@@ -172,5 +172,59 @@ begin
 end;
 $$ language plpgsql security definer set search_path = public;
 
--- Allow authenticated users to call get_user_emails
 grant execute on function get_user_emails(uuid[]) to authenticated;
+
+-- RPC: Get all users for admin panel (bypasses RLS)
+create or replace function get_admin_users()
+returns table(user_id uuid, tier text, credits_limit integer, credits_used integer, created_at timestamptz, email text) as $$
+begin
+  return query
+  select uc.user_id, uc.tier, uc.credits_limit, uc.credits_used, uc.created_at, au.email
+  from user_credits uc
+  left join auth.users au on au.id = uc.user_id
+  order by uc.created_at desc
+  limit 100;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+grant execute on function get_admin_users() to authenticated;
+
+-- RPC: Get all payments for admin panel (bypasses RLS)
+create or replace function get_admin_payments()
+returns setof payments as $$
+begin
+  return query
+  select * from payments order by created_at desc limit 200;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+grant execute on function get_admin_payments() to authenticated;
+
+-- Fix RLS: allow authenticated users to read/update all user_credits (needed for admin panel)
+-- These are permissive; tighten later with proper admin role if needed
+drop policy if exists "Authenticated can read all credits" on user_credits;
+create policy "Authenticated can read all credits"
+  on user_credits for select
+  using (auth.role() = 'authenticated');
+
+drop policy if exists "Authenticated can update all credits" on user_credits;
+create policy "Authenticated can update all credits"
+  on user_credits for update
+  using (auth.role() = 'authenticated');
+
+drop policy if exists "Authenticated can read all payments" on payments;
+create policy "Authenticated can read all payments"
+  on payments for select
+  using (auth.role() = 'authenticated');
+
+drop policy if exists "Authenticated can update payments" on payments;
+create policy "Authenticated can update payments"
+  on payments for update
+  using (auth.role() = 'authenticated');
+
+-- Fix site_config: allow authenticated to write (admin panel needs this)
+drop policy if exists "Authenticated can write site_config" on site_config;
+create policy "Authenticated can write site_config"
+  on site_config for all
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');

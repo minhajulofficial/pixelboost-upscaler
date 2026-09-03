@@ -136,6 +136,13 @@ export default function Admin({ user }: { user: User | null }) {
   }
 
   async function loadUsers() {
+    try {
+      const { data, error } = await supabase.rpc('get_admin_users');
+      if (!error && data && Array.isArray(data) && data.length > 0) {
+        setUsers(data as AdminUser[]);
+        return;
+      }
+    } catch {}
     const { data } = await supabase
       .from('user_credits')
       .select('*')
@@ -157,6 +164,13 @@ export default function Admin({ user }: { user: User | null }) {
   }
 
   async function loadPayments() {
+    try {
+      const { data, error } = await supabase.rpc('get_admin_payments');
+      if (!error && data && Array.isArray(data)) {
+        setPayments(data as Payment[]);
+        return;
+      }
+    } catch {}
     try {
       const data = await getAllPayments();
       setPayments(data);
