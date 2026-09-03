@@ -13,25 +13,25 @@ type LandingProps = {
 export default function Landing({ onAuth, user }: LandingProps) {
   const tiers = getTiers();
   return (
-    <div className="flex min-h-screen flex-col bg-gray-950 text-white">
+    <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
       <Topbar user={user} onShowAuth={onAuth} />
       {/* Hero Section */}
       <section className="relative overflow-hidden">
         {/* Background gradient */}
-        <div className="absolute inset-0 bg-gradient-to-br from-violet-600/20 via-purple-600/10 to-indigo-600/20" />
+        <div className="absolute inset-0 bg-gradient-to-br from-green-600/20 via-emerald-600/10 to-green-600/20" />
         <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-10" />
 
         <div className="relative mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
           <div className="text-center">
             {/* Badge */}
-            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-purple-500/30 bg-purple-500/10 px-4 py-2 text-sm text-purple-300">
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-green-500/30 bg-green-500/10 px-4 py-2 text-sm text-green-300">
               <Sparkles size={14} />
               AI-Powered Image Upscaling
             </div>
 
             {/* Title */}
             <h1 className="mb-6 text-5xl font-bold tracking-tight sm:text-6xl lg:text-7xl">
-              <span className="bg-gradient-to-r from-violet-400 via-purple-400 to-indigo-400 bg-clip-text text-transparent">
+              <span className="bg-gradient-to-r from-green-400 via-emerald-400 to-green-400 bg-clip-text text-transparent">
                 PixelBoost
               </span>
             </h1>
@@ -47,7 +47,7 @@ export default function Landing({ onAuth, user }: LandingProps) {
             <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
               <Link
                 to="/upscale"
-                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 px-8 py-4 text-lg font-semibold text-white shadow-lg shadow-purple-500/25 transition-all hover:from-violet-500 hover:to-purple-500 hover:shadow-xl hover:shadow-purple-500/30"
+                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 px-8 py-4 text-lg font-semibold text-white shadow-lg shadow-green-500/25 transition-all hover:from-green-400 hover:to-emerald-500 hover:shadow-xl hover:shadow-green-500/30"
               >
                 Start Upscaling
                 <ArrowRight size={20} />
@@ -98,7 +98,7 @@ export default function Landing({ onAuth, user }: LandingProps) {
               description="Fast mode processes in milliseconds. AI mode delivers stunning detail in seconds."
             />
             <FeatureCard
-              icon={<Sparkles className="text-purple-500" />}
+              icon={<Sparkles className="text-green-500" />}
               title="AI Enhancement"
               description="Real-ESRGAN technology recovers real texture and detail from low-resolution images."
             />
@@ -140,12 +140,12 @@ export default function Landing({ onAuth, user }: LandingProps) {
                 key={tier.id}
                 className={`relative rounded-2xl border p-8 ${
                   tier.id === 'pro'
-                    ? 'border-purple-500 bg-gradient-to-b from-purple-500/10 to-transparent'
+                    ? 'border-green-500 bg-gradient-to-b from-green-500/10 to-transparent'
                     : 'border-gray-700 bg-gray-800/50'
                 }`}
               >
                 {tier.id === 'pro' && (
-                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 rounded-full bg-purple-500 px-4 py-1 text-xs font-semibold text-white">
+                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 rounded-full bg-green-500 px-4 py-1 text-xs font-semibold text-white">
                     POPULAR
                   </div>
                 )}
@@ -165,7 +165,7 @@ export default function Landing({ onAuth, user }: LandingProps) {
                    onClick={() => onAuth()}
                   className={`w-full rounded-xl py-3 font-semibold transition-all ${
                     tier.id === 'pro'
-                      ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white hover:from-violet-500 hover:to-purple-500'
+                      ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-400 hover:to-emerald-500'
                       : 'border border-gray-600 bg-gray-800 text-white hover:border-gray-500 hover:bg-gray-700'
                   }`}
                 >

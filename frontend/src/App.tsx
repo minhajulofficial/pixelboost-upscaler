@@ -9,6 +9,7 @@ import Checkout from './pages/Checkout';
 import AuthModal from './components/AuthModal';
 import { ToastProvider } from './contexts/ToastContext';
 import { getCurrentUser } from './services/authService';
+import { loadTierConfigs } from './services/creditService';
 import type { User } from './lib/supabase';
 import { checkAllServers } from './services/serverPool';
 
@@ -20,6 +21,7 @@ export default function App() {
   useEffect(() => {
     checkAuth();
     checkAllServers();
+    loadTierConfigs();
   }, []);
 
   async function checkAuth() {
@@ -40,9 +42,9 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-950">
+      <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">
         <div className="text-center">
-          <div className="mb-4 inline-block h-12 w-12 animate-spin rounded-full border-4 border-purple-500 border-t-transparent" />
+          <div className="mb-4 inline-block h-12 w-12 animate-spin rounded-full border-4 border-green-500 border-t-transparent" />
           <p className="text-gray-400">Loading PixelBoost...</p>
         </div>
       </div>

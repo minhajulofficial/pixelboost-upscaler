@@ -11,7 +11,7 @@ import Footer from '../components/Footer';
 import type { User } from '../lib/supabase';
 import { isAdmin } from '../services/adminService';
 import { supabase } from '../lib/supabase';
-import { TIERS, Tier, TierConfig } from '../services/creditService';
+import { TIERS, Tier, TierConfig, getAllPayments, updatePaymentStatus, saveTierConfigs, type Payment } from '../services/creditService';
 import { checkAllServers, getServers } from '../services/serverPool';
 
 type AdminUser = {
@@ -22,19 +22,6 @@ type AdminUser = {
   is_admin?: boolean;
   email?: string;
   created_at: string;
-  status?: string;
-};
-
-type PaymentEntry = {
-  id: string;
-  userId: string;
-  method: 'bkash' | 'nagad';
-  tier: Tier;
-  amount: number;
-  transactionId: string;
-  senderNumber: string;
-  status: 'pending' | 'approved' | 'rejected';
-  createdAt: string;
 };
 
 type ModelConfig = {
@@ -82,17 +69,19 @@ const DEFAULT_SETTINGS: SiteSettings = {
   headerLinks: [],
 };
 
-function loadFromStorage<T>(key: string, fallback: T): T {
+async function loadSiteConfig<T>(key: string, fallback: T): Promise<T> {
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+    const { data } = await supabase.from('site_config').select('value').eq('key', key).single();
+    if (data?.value) return data.value as T;
+  } catch {}
+  return fallback;
 }
 
-function saveToStorage(key: string, value: unknown) {
-  localStorage.setItem(key, JSON.stringify(value));
+async function saveSiteConfig(key: string, value: unknown): Promise<void> {
+  const { error } = await supabase
+    .from('site_config')
+    .upsert({ key, value }, { onConflict: 'key' });
+  if (error) throw error;
 }
 
 export default function Admin({ user, onShowAuth }: { user: User | null; onShowAuth: () => void }) {
@@ -101,21 +90,11 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const [loading, setLoading] = useState(true);
   const [servers, setServers] = useState(getServers());
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [payments, setPayments] = useState<PaymentEntry[]>(loadFromStorage('admin_payments', []));
-  const [tierConfigs, setTierConfigs] = useState<TierConfig[]>(() => {
-    const saved = loadFromStorage<TierConfig[] | null>('admin_tier_configs', null);
-    if (saved && saved.length === TIERS.length) return saved;
-    return TIERS.map((t) => ({
-      id: t.id as Tier,
-      label: t.label,
-      credits: t.credits,
-      price: t.price,
-      priceBDT: t.priceBDT,
-      features: [...t.features],
-    }));
-  });
-  const [models, setModels] = useState<ModelConfig[]>(loadFromStorage('admin_models', DEFAULT_MODELS));
-  const [settings, setSettings] = useState<SiteSettings>(loadFromStorage('admin_settings', DEFAULT_SETTINGS));
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [tierConfigs, setTierConfigs] = useState<TierConfig[]>(TIERS.map((t) => ({ ...t, features: [...t.features] })));
+  const [models, setModels] = useState<ModelConfig[]>(DEFAULT_MODELS);
+  const [settings, setSettings] = useState<SiteSettings>(DEFAULT_SETTINGS);
+  const [saving, setSaving] = useState(false);
 
   const [paymentMethod, setPaymentMethod] = useState<'bkash' | 'nagad'>('bkash');
   const [paymentUser, setPaymentUser] = useState('');
@@ -145,35 +124,65 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   if (!isAdmin(user)) return <Navigate to="/upscale" replace />;
 
   useEffect(() => {
-    loadUsers();
-    refreshServers();
+    loadAll();
   }, []);
 
-  useEffect(() => {
-    saveToStorage('admin_payments', payments);
-  }, [payments]);
-
-  useEffect(() => {
-    saveToStorage('admin_tier_configs', tierConfigs);
-  }, [tierConfigs]);
-
-  useEffect(() => {
-    saveToStorage('admin_models', models);
-  }, [models]);
-
-  useEffect(() => {
-    saveToStorage('admin_settings', settings);
-  }, [settings]);
+  async function loadAll() {
+    setLoading(true);
+    await Promise.all([
+      loadUsers(),
+      loadPayments(),
+      loadTierConfigsFromDb(),
+      loadModelsFromDb(),
+      loadSettingsFromDb(),
+      refreshServers(),
+    ]);
+    setLoading(false);
+  }
 
   async function loadUsers() {
-    setLoading(true);
     const { data } = await supabase
       .from('user_credits')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(100);
     setUsers((data as AdminUser[]) || []);
-    setLoading(false);
+  }
+
+  async function loadPayments() {
+    try {
+      const data = await getAllPayments();
+      setPayments(data);
+    } catch {
+      setPayments([]);
+    }
+  }
+
+  async function loadTierConfigsFromDb() {
+    try {
+      const { data } = await supabase.from('site_config').select('value').eq('key', 'tier_configs').single();
+      if (data?.value && Array.isArray(data.value)) {
+        setTierConfigs(data.value as TierConfig[]);
+      }
+    } catch {}
+  }
+
+  async function loadModelsFromDb() {
+    try {
+      const { data } = await supabase.from('site_config').select('value').eq('key', 'models').single();
+      if (data?.value && Array.isArray(data.value)) {
+        setModels(data.value as ModelConfig[]);
+      }
+    } catch {}
+  }
+
+  async function loadSettingsFromDb() {
+    try {
+      const { data } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
+      if (data?.value && typeof data.value === 'object') {
+        setSettings({ ...DEFAULT_SETTINGS, ...(data.value as Partial<SiteSettings>) });
+      }
+    } catch {}
   }
 
   async function addUser() {
@@ -230,7 +239,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   async function banUser(userId: string) {
     await supabase
       .from('user_credits')
-      .update({ credits_limit: 0, status: 'banned' })
+      .update({ credits_limit: 0 })
       .eq('user_id', userId);
     loadUsers();
   }
@@ -241,40 +250,56 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
     const cfg = TIERS.find((t) => t.id === u.tier)!;
     await supabase
       .from('user_credits')
-      .update({ credits_limit: cfg.credits, status: 'active' })
+      .update({ credits_limit: cfg.credits })
       .eq('user_id', userId);
     loadUsers();
   }
 
-  function approvePayment(id: string) {
-    setPayments((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, status: 'approved' as const } : p))
-    );
+  async function approvePayment(id: string) {
+    try {
+      await updatePaymentStatus(id, 'approved');
+      setPayments((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, status: 'approved' as const } : p))
+      );
+    } catch (err) {
+      console.error('Failed to approve payment:', err);
+    }
   }
 
-  function rejectPayment(id: string) {
-    setPayments((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, status: 'rejected' as const } : p))
-    );
+  async function rejectPayment(id: string) {
+    try {
+      await updatePaymentStatus(id, 'rejected');
+      setPayments((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, status: 'rejected' as const } : p))
+      );
+    } catch (err) {
+      console.error('Failed to reject payment:', err);
+    }
   }
 
-  function submitPayment() {
+  async function submitAdminPayment() {
     if (!paymentUser || !paymentAmount || !paymentTxId || !paymentSender) return;
-    const entry: PaymentEntry = {
-      id: Date.now().toString(36),
-      userId: paymentUser,
-      method: paymentMethod,
-      tier: paymentTier,
-      amount: Number(paymentAmount),
-      transactionId: paymentTxId,
-      senderNumber: paymentSender,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-    };
-    setPayments((prev) => [entry, ...prev]);
-    setPaymentAmount('');
-    setPaymentTxId('');
-    setPaymentSender('');
+    setSaving(true);
+    try {
+      const { error } = await supabase.from('payments').insert({
+        user_id: paymentUser,
+        amount: Number(paymentAmount),
+        method: paymentMethod,
+        tier: paymentTier,
+        transaction_id: paymentTxId,
+        sender_number: paymentSender,
+        status: 'pending',
+      });
+      if (error) throw error;
+      setPaymentAmount('');
+      setPaymentTxId('');
+      setPaymentSender('');
+      await loadPayments();
+    } catch (err) {
+      console.error('Failed to submit payment:', err);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function startEditTier(tier: TierConfig) {
@@ -286,55 +311,64 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
     setEditTierFeatures(tier.features.join('\n'));
   }
 
-  function saveTierEdits() {
+  async function saveTierEdits() {
     if (!editingTier) return;
-    setTierConfigs((prev) =>
-      prev.map((t) =>
-        t.id === editingTier
-           ? {
-               ...t,
-               label: editTierLabel,
-               credits: Number(editTierCredits),
-               price: editTierPrice,
-               priceBDT: Number(editTierPriceBDT),
-               features: editTierFeatures.split('\n').filter(Boolean),
-             }
-          : t
-      )
+    const updated = tierConfigs.map((t) =>
+      t.id === editingTier
+        ? {
+            ...t,
+            label: editTierLabel,
+            credits: Number(editTierCredits),
+            price: editTierPrice,
+            priceBDT: Number(editTierPriceBDT),
+            features: editTierFeatures.split('\n').filter(Boolean),
+          }
+        : t
     );
+    setTierConfigs(updated);
     setEditingTier(null);
+    try {
+      await saveTierConfigs(updated);
+    } catch (err) {
+      console.error('Failed to save tier configs:', err);
+    }
   }
 
-  function toggleModel(modelId: string) {
-    setModels((prev) =>
-      prev.map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m))
-    );
+  async function toggleModel(modelId: string) {
+    const updated = models.map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m));
+    setModels(updated);
+    try { await saveSiteConfig('models', updated); } catch {}
   }
 
-  function updateModelHFUrl(modelId: string, url: string) {
-    setModels((prev) =>
-      prev.map((m) => (m.id === modelId ? { ...m, hfSpaceUrl: url } : m))
-    );
+  async function updateModelHFUrl(modelId: string, url: string) {
+    const updated = models.map((m) => (m.id === modelId ? { ...m, hfSpaceUrl: url } : m));
+    setModels(updated);
+    try { await saveSiteConfig('models', updated); } catch {}
   }
 
-  function addHeaderLink() {
+  async function addHeaderLink() {
     if (!newHeaderLink.label || !newHeaderLink.url) return;
-    setSettings((prev) => ({
-      ...prev,
-      headerLinks: [...prev.headerLinks, { ...newHeaderLink }],
-    }));
+    const updated = { ...settings, headerLinks: [...settings.headerLinks, { ...newHeaderLink }] };
+    setSettings(updated);
     setNewHeaderLink({ label: '', url: '' });
+    try { await saveSiteConfig('site_settings', updated); } catch {}
   }
 
-  function removeHeaderLink(index: number) {
-    setSettings((prev) => ({
-      ...prev,
-      headerLinks: prev.headerLinks.filter((_, i) => i !== index),
-    }));
+  async function removeHeaderLink(index: number) {
+    const updated = { ...settings, headerLinks: settings.headerLinks.filter((_, i) => i !== index) };
+    setSettings(updated);
+    try { await saveSiteConfig('site_settings', updated); } catch {}
   }
 
-  function saveSettings() {
-    saveToStorage('admin_settings', settings);
+  async function saveSettings() {
+    setSaving(true);
+    try {
+      await saveSiteConfig('site_settings', settings);
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+    } finally {
+      setSaving(false);
+    }
   }
 
   const filtered = users
@@ -356,7 +390,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   const pendingPayments = payments.filter((p) => p.status === 'pending').length;
   const approvedRevenue = payments
     .filter((p) => p.status === 'approved')
-    .reduce((a, b) => a + b.amount, 0);
+    .reduce((a, b) => a + (b.amount || 0), 0);
 
   function renderRating(value: number, max: number) {
     return (
@@ -634,7 +668,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
                         {new Date(u.created_at).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3">
-                        {u.status === 'banned' ? (
+                        {u.credits_limit === 0 ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-400">
                             <Ban size={10} /> BANNED
                           </span>
@@ -674,7 +708,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
                           >
                             <Zap size={10} className="inline" /> Reset
                           </button>
-                          {u.status === 'banned' ? (
+                          {u.credits_limit === 0 ? (
                             <button
                               onClick={() => unbanUser(u.user_id)}
                               className="rounded-lg bg-yellow-600 px-2 py-1 text-xs text-white hover:bg-yellow-500"
@@ -812,10 +846,11 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
             </div>
           </div>
           <button
-            onClick={submitPayment}
-            className="mt-4 rounded-lg bg-purple-600 px-6 py-2 text-sm font-semibold text-white hover:bg-purple-500"
+            onClick={submitAdminPayment}
+            disabled={saving}
+            className="mt-4 rounded-lg bg-purple-600 px-6 py-2 text-sm font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
           >
-            Submit Payment
+            {saving ? 'Submitting...' : 'Submit Payment'}
           </button>
         </div>
 
@@ -857,16 +892,16 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
                         </span>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-white">
-                        {p.userId.slice(0, 8)}…
+                        {(p.user_id || '').slice(0, 8)}…
                       </td>
                       <td className="px-4 py-3 text-xs text-white">{p.tier}</td>
                       <td className="px-4 py-3 text-xs font-semibold text-white">
                         ৳{p.amount}
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                        {p.transactionId}
+                        {p.transaction_id}
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-400">{p.senderNumber}</td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{p.sender_number}</td>
                       <td className="px-4 py-3">
                         <span
                           className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${
@@ -881,7 +916,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-400">
-                        {new Date(p.createdAt).toLocaleDateString()}
+                        {new Date(p.created_at).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3">
                         {p.status === 'pending' && (
@@ -1220,15 +1255,13 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
-          <div className="text-xs text-gray-500">
-            Settings are stored locally. For production, connect to a database.
-          </div>
+        <div className="flex items-center justify-end">
           <button
             onClick={saveSettings}
-            className="flex items-center gap-2 rounded-xl bg-purple-600 px-6 py-2 text-sm font-semibold text-white hover:bg-purple-500"
+            disabled={saving}
+            className="flex items-center gap-2 rounded-xl bg-purple-600 px-6 py-2 text-sm font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
           >
-            <Save size={14} /> Save Settings
+            <Save size={14} /> {saving ? 'Saving...' : 'Save Settings'}
           </button>
         </div>
       </div>
@@ -1245,11 +1278,11 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-gray-950">
+    <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
       <Topbar user={user} onShowAuth={onShowAuth} />
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
         <div className="mb-6 flex items-center gap-3">
-          <Shield className="text-purple-500" size={24} />
+          <Shield className="text-green-500" size={24} />
           <h1 className="text-xl font-bold text-white">Admin Panel</h1>
           <span className="rounded-full bg-purple-500/20 px-3 py-1 text-xs font-semibold text-purple-300">
             {users.length} users
@@ -1266,7 +1299,7 @@ export default function Admin({ user, onShowAuth }: { user: User | null; onShowA
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
                     activeTab === tab.id
-                      ? 'bg-purple-600 text-white'
+                      ? 'bg-green-600 text-white'
                       : 'text-gray-400 hover:bg-gray-800 hover:text-white'
                   }`}
                 >

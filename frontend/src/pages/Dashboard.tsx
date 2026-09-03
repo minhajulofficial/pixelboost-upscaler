@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { signOut } from '../services/authService';
 import type { User } from '../lib/supabase';
-import { getUserStats, getTiers, upgradeTier, Tier } from '../services/creditService';
+import { getUserStats, getTiers } from '../services/creditService';
 
 type DashboardProps = {
   user: User;
@@ -14,7 +14,6 @@ type DashboardProps = {
 
 export default function Dashboard({ user, onRefresh }: DashboardProps) {
   const [stats, setStats] = useState({ totalJobs: 0, successfulJobs: 0, successRate: 0, last24h: 0 });
-  const [upgrading, setUpgrading] = useState(false);
 
   useEffect(() => {
     loadStats();
@@ -29,18 +28,6 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
     }
   }
 
-  async function handleUpgrade(tier: Tier) {
-    setUpgrading(true);
-    try {
-      await upgradeTier(user.id, tier);
-      onRefresh();
-    } catch (err) {
-      console.error('Upgrade failed:', err);
-    } finally {
-      setUpgrading(false);
-    }
-  }
-
   async function handleSignOut() {
     await signOut();
     window.location.href = '/';
@@ -52,19 +39,19 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
   const tiers = getTiers();
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
+    <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
       {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-gray-800 bg-gray-950/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 border-b border-gray-200 bg-white/80 backdrop-blur-xl dark:border-gray-800 dark:bg-gray-950/80">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <Link to="/" className="flex items-center gap-2">
-            <Sparkles className="text-purple-500" size={24} />
+            <Sparkles className="text-green-500" size={24} />
             <span className="text-xl font-bold">PixelBoost</span>
           </Link>
 
           <div className="flex items-center gap-4">
             <Link
               to="/upscale"
-              className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500"
+              className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500"
             >
               Start Upscaling
             </Link>
@@ -127,7 +114,7 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-gray-800">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-violet-600 to-purple-600 transition-all"
+                className="h-full rounded-full bg-gradient-to-r from-green-500 to-emerald-600 transition-all"
                 style={{
                   width: user.credits_limit === Infinity
                     ? '10%'
@@ -148,13 +135,13 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
                 className={`rounded-2xl border p-6 ${
                   user.tier === tier.id
                     ? 'border-purple-500 bg-purple-500/10'
-                    : 'border-gray-700 bg-gray-800/50'
+                    : 'border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-800/50'
                 }`}
               >
                 <div className="mb-2 flex items-center justify-between">
                   <h3 className="text-lg font-bold">{tier.label}</h3>
                   {user.tier === tier.id && (
-                    <span className="rounded-full bg-purple-500 px-3 py-1 text-xs font-semibold text-white">
+                    <span className="rounded-full bg-green-500 px-3 py-1 text-xs font-semibold text-white">
                       CURRENT
                     </span>
                   )}
@@ -169,13 +156,12 @@ export default function Dashboard({ user, onRefresh }: DashboardProps) {
                   ))}
                 </ul>
                 {user.tier !== tier.id && (
-                  <button
-                    onClick={() => handleUpgrade(tier.id)}
-                    disabled={upgrading}
-                    className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 py-3 font-semibold text-white transition-all hover:from-violet-500 hover:to-purple-500 disabled:opacity-50"
+                  <Link
+                    to={`/checkout?tier=${tier.id}`}
+                    className="block w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 py-3 text-center font-semibold text-white transition-all hover:from-green-400 hover:to-emerald-500"
                   >
-                    {upgrading ? 'Upgrading...' : 'Upgrade'}
-                  </button>
+                    Upgrade
+                  </Link>
                 )}
               </div>
             ))}

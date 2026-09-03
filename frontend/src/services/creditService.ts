@@ -11,7 +11,7 @@ export type TierConfig = {
   features: string[];
 };
 
-export const TIERS: TierConfig[] = [
+const DEFAULT_TIERS: TierConfig[] = [
   {
     id: 'free',
     label: 'Free',
@@ -42,7 +42,7 @@ export const TIERS: TierConfig[] = [
   {
     id: 'lifetime',
     label: 'Lifetime',
-    credits: Infinity,
+    credits: 999999,
     price: '$49.99',
     priceBDT: 5500,
     features: [
@@ -56,23 +56,42 @@ export const TIERS: TierConfig[] = [
   },
 ];
 
-export function getTiers(): TierConfig[] {
+// In-memory cache, hydrated from Supabase on app init
+let cachedTiers: TierConfig[] | null = null;
+
+export async function loadTierConfigs(): Promise<TierConfig[]> {
   try {
-    const saved = JSON.parse(localStorage.getItem('admin_tier_configs') || '[]');
-    if (Array.isArray(saved) && saved.length === TIERS.length) return saved;
+    const { data } = await supabase
+      .from('site_config')
+      .select('value')
+      .eq('key', 'tier_configs')
+      .single();
+    if (data?.value && Array.isArray(data.value)) {
+      cachedTiers = data.value as TierConfig[];
+      return cachedTiers;
+    }
   } catch {}
-  return TIERS;
+  cachedTiers = DEFAULT_TIERS;
+  return cachedTiers;
+}
+
+export async function saveTierConfigs(tiers: TierConfig[]): Promise<void> {
+  cachedTiers = tiers;
+  const { error } = await supabase
+    .from('site_config')
+    .upsert({ key: 'tier_configs', value: tiers }, { onConflict: 'key' });
+  if (error) throw error;
+}
+
+export const TIERS: TierConfig[] = DEFAULT_TIERS;
+
+export function getTiers(): TierConfig[] {
+  return cachedTiers || DEFAULT_TIERS;
 }
 
 export function getTierConfig(tier: Tier): TierConfig {
-  try {
-    const saved = JSON.parse(localStorage.getItem('admin_tier_configs') || '[]');
-    if (Array.isArray(saved) && saved.length === TIERS.length) {
-      const found = saved.find((t: TierConfig) => t.id === tier);
-      if (found) return found;
-    }
-  } catch {}
-  return TIERS.find((t) => t.id === tier) || TIERS[0];
+  const list = cachedTiers || DEFAULT_TIERS;
+  return list.find((t) => t.id === tier) || DEFAULT_TIERS.find((t) => t.id === tier) || DEFAULT_TIERS[0];
 }
 
 export function getRemainingCredits(creditsUsed: number, creditsLimit: number): number {
