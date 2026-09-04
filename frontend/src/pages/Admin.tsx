@@ -47,6 +47,8 @@ type SiteSettings = {
   paymentNumbers: Record<string, string>;
   googleOnly: boolean;
   disabledScales: number[];
+  footerSocial: { githubUrl: string; githubEnabled: boolean; emailUrl: string; emailEnabled: boolean; websiteUrl: string; websiteEnabled: boolean };
+  topbar: { showNotification: boolean; showDeveloper: boolean; showTutorial: boolean; showHealth: boolean; notificationTitle: string; notificationText: string; developerName: string; developerBio: string; developerAvatar: string; developerGithub: string; healthText: string };
 };
 
 const TABS = [
@@ -77,6 +79,8 @@ const DEFAULT_SETTINGS: SiteSettings = {
   paymentNumbers: { bkash: '', nagad: '' },
   googleOnly: false,
   disabledScales: [],
+  footerSocial: { githubUrl: 'https://github.com/minhajulofficial/pixelboost-upscaler', githubEnabled: true, emailUrl: 'mailto:minhajulofficial.bd@gmail.com', emailEnabled: true, websiteUrl: 'https://csvtree.pro.bd', websiteEnabled: true },
+  topbar: { showNotification: true, showDeveloper: true, showTutorial: true, showHealth: true, notificationTitle: 'Notifications', notificationText: 'Welcome to PixelBoost! Upscale images 2x–6x with AI.', developerName: 'Minhajul Islam', developerBio: 'Full-stack developer passionate about AI and image processing. Building tools for microstock contributors.', developerAvatar: '', developerGithub: 'https://github.com/minhajulofficial', healthText: 'All systems healthy', },
 };
 
 async function saveSiteConfig(key: string, value: unknown): Promise<void> {
@@ -1151,6 +1155,98 @@ export default function Admin({ user }: { user: User | null }) {
               </div>
             ))}
             {settings.headerLinks.length === 0 && <div className="py-3 text-center text-xs text-gray-500">No header links configured</div>}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Footer Social Links</h3>
+          <div className="space-y-3">
+            {[
+              { key: 'github', label: 'GitHub', icon: 'Github' },
+              { key: 'email', label: 'Email', icon: 'Mail' },
+              { key: 'website', label: 'Website', icon: 'Globe' },
+            ].map((item) => {
+              const fs = settings.footerSocial || DEFAULT_SETTINGS.footerSocial;
+              const urlKey = `${item.key}Url` as keyof typeof fs;
+              const enabledKey = `${item.key}Enabled` as keyof typeof fs;
+              const url = String((fs as Record<string, unknown>)[urlKey] || '');
+              const enabled = Boolean((fs as Record<string, unknown>)[enabledKey]);
+              return (
+                <div key={item.key} className="flex items-center gap-3">
+                  <div className="w-20 text-xs text-gray-400">{item.label}</div>
+                  <input type="text" value={url} onChange={(e) => {
+                    const updated = { ...settings, footerSocial: { ...fs, [urlKey]: e.target.value } as typeof fs };
+                    setSettings(updated);
+                  }} placeholder={item.key === 'email' ? 'mailto:...' : 'https://...'} className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
+                  <button onClick={() => {
+                    const updated = { ...settings, footerSocial: { ...fs, [enabledKey]: !enabled } as typeof fs };
+                    setSettings(updated);
+                    saveSiteConfig('site_settings', updated).catch(() => {});
+                  }} className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${enabled ? 'bg-green-600' : 'bg-gray-700'}`}>
+                    <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Topbar Icons</h3>
+          <div className="space-y-3">
+            {[
+              { key: 'showNotification', label: 'Notification (Bell)' },
+              { key: 'showDeveloper', label: 'Developer (Code)' },
+              { key: 'showTutorial', label: 'Tutorial (Book)' },
+              { key: 'showHealth', label: 'Health (CircleDot)' },
+            ].map((it) => {
+              const tb = settings.topbar || DEFAULT_SETTINGS.topbar;
+              const enabled = Boolean((tb as Record<string, unknown>)[it.key]);
+              return (
+                <div key={it.key} className="flex items-center justify-between">
+                  <span className="text-sm text-white">{it.label}</span>
+                  <button onClick={() => {
+                    const updated = { ...settings, topbar: { ...tb, [it.key]: !enabled } as typeof tb };
+                    setSettings(updated);
+                    saveSiteConfig('site_settings', updated).catch(() => {});
+                  }} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${enabled ? 'bg-green-600' : 'bg-gray-700'}`}>
+                    <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-4 grid gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Notification Title</label>
+              <input type="text" value={settings.topbar?.notificationTitle || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), notificationTitle: e.target.value } }))} placeholder="Notifications" className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Notification Text</label>
+              <textarea value={settings.topbar?.notificationText || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), notificationText: e.target.value } }))} rows={2} placeholder="Welcome message..." className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">Developer Name</label>
+                <input type="text" value={settings.topbar?.developerName || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), developerName: e.target.value } }))} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">Developer GitHub</label>
+                <input type="text" value={settings.topbar?.developerGithub || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), developerGithub: e.target.value } }))} placeholder="https://github.com/..." className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Developer Bio</label>
+              <textarea value={settings.topbar?.developerBio || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), developerBio: e.target.value } }))} rows={2} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Developer Avatar URL</label>
+              <input type="text" value={settings.topbar?.developerAvatar || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), developerAvatar: e.target.value } }))} placeholder="https://..." className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">Health Text</label>
+              <input type="text" value={settings.topbar?.healthText || ''} onChange={(e) => setSettings((s) => ({ ...s, topbar: { ...(s.topbar || DEFAULT_SETTINGS.topbar), healthText: e.target.value } }))} placeholder="All systems healthy" className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
+            </div>
           </div>
         </div>
 
