@@ -332,16 +332,14 @@ export default function Admin({ user }: { user: User | null }) {
     }
   }
 
-  async function toggleModel(modelId: string) {
+  function toggleModel(modelId: string) {
     const updated = models.map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m));
     setModels(updated);
-    try { await saveSiteConfig('models', updated); } catch {}
   }
 
-  async function updateModelHFUrl(modelId: string, url: string) {
+  function updateModelHFUrl(modelId: string, url: string) {
     const updated = models.map((m) => (m.id === modelId ? { ...m, hfSpaceUrl: url } : m));
     setModels(updated);
-    try { await saveSiteConfig('models', updated); } catch {}
   }
 
   async function addHeaderLink() {
@@ -966,6 +964,18 @@ export default function Admin({ user }: { user: User | null }) {
     );
   }
 
+  async function saveModels() {
+    setSaving(true);
+    try {
+      await saveSiteConfig('models', models);
+    } catch (err) {
+      console.error('Failed to save models:', err);
+      alert('Save failed: ' + (err instanceof Error ? err.message : String(err)) + '\n\nSupabase SQL run koro: site_config write policy add korte hobe (ager boro SQL ta).');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function renderModels() {
     return (
       <div className="space-y-4">
@@ -985,7 +995,7 @@ export default function Admin({ user }: { user: User | null }) {
                 <button
                   onClick={() => toggleModel(m.id)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    m.enabled ? 'bg-purple-600' : 'bg-gray-700'
+                    m.enabled ? 'bg-green-600' : 'bg-gray-700'
                   }`}
                 >
                   <span
@@ -1019,12 +1029,18 @@ export default function Admin({ user }: { user: User | null }) {
                     value={m.hfSpaceUrl}
                     onChange={(e) => updateModelHFUrl(m.id, e.target.value)}
                     placeholder="https://huggingface.co/spaces/..."
-                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none"
                   />
                 </div>
               )}
             </div>
           ))}
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <span className="text-xs text-gray-500">Toggle off/on then Save — Upscaler e model hide/show hobe</span>
+          <button onClick={saveModels} disabled={saving} className="flex items-center gap-2 rounded-xl bg-green-600 px-6 py-2 text-sm font-semibold text-white hover:bg-green-500 disabled:opacity-50">
+            <Save size={14} /> {saving ? 'Saving...' : 'Save Models'}
+          </button>
         </div>
       </div>
     );

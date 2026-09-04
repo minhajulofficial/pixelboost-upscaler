@@ -65,19 +65,26 @@ export default function Upscaler({ user }: UpscalerProps) {
     try { const v = localStorage.getItem('pixelboost_engine'); return v === ENGINE_LOCAL ? ENGINE_LOCAL : ENGINE_SERVER; } catch { return ENGINE_SERVER; }
   });
   const [disabledScales, setDisabledScales] = useState<number[]>([]);
+  const [disabledModels, setDisabledModels] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const MODES = engine === ENGINE_LOCAL ? LOCAL_MODES : SERVER_MODES;
+  const rawModes = engine === ENGINE_LOCAL ? LOCAL_MODES : SERVER_MODES;
+  const MODES = rawModes.filter((m) => !disabledModels.includes(m.id));
   const visibleScales = engine === ENGINE_SERVER ? SCALES.filter((s) => !disabledScales.includes(s)) : SCALES;
 
   useEffect(() => {
     (async () => {
       try {
         const { supabase } = await import('../lib/supabase');
-        const { data } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
-        if (data?.value && typeof data.value === 'object') {
-          const ds = (data.value as Record<string, unknown>).disabledScales;
-          if (Array.isArray(ds)) setDisabledScales(ds as number[]);
+        const { data: ds } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
+        if (ds?.value && typeof ds.value === 'object') {
+          const d = (ds.value as Record<string, unknown>).disabledScales;
+          if (Array.isArray(d)) setDisabledScales(d as number[]);
+        }
+        const { data: md } = await supabase.from('site_config').select('value').eq('key', 'models').single();
+        if (md?.value && Array.isArray(md.value)) {
+          const disabled = (md.value as Array<{ id: string; enabled: boolean }>).filter((m) => m.enabled === false).map((m) => m.id);
+          setDisabledModels(disabled);
         }
       } catch {}
     })();
