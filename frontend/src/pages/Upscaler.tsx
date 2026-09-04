@@ -87,6 +87,17 @@ export default function Upscaler({ user }: UpscalerProps) {
           setDisabledModels(disabled);
         }
       } catch {}
+      try {
+        const s = getServers()[0];
+        if (s) {
+          const r = await fetch(`${s.url}/version`);
+          if (r.ok) {
+            const j = await r.json() as Record<string, unknown>;
+            if (typeof j.max_output_pixels === 'number') setServerCaps((c) => ({ ...c, maxOutput: j.max_output_pixels as number }));
+            if (typeof j.ai_max_input_pixels === 'number') setServerCaps((c) => ({ ...c, aiMax: j.ai_max_input_pixels as number }));
+          }
+        }
+      } catch {}
     })();
   }, []);
 
@@ -102,8 +113,9 @@ export default function Upscaler({ user }: UpscalerProps) {
   const servers = getServers();
   const canProcess = engine === ENGINE_LOCAL ? !!user : (user ? canUseCredits(user.credits_used, user.credits_limit) : false);
 
-  const SERVER_AI_MAX_PIXELS = 4000000;
-  const SERVER_MAX_OUTPUT_PIXELS = 40000000;
+  const [serverCaps, setServerCaps] = useState({ aiMax: 4000000, maxOutput: 25000000 });
+  const SERVER_AI_MAX_PIXELS = serverCaps.aiMax;
+  const SERVER_MAX_OUTPUT_PIXELS = serverCaps.maxOutput;
 
   async function getServerSafeBlob(file: File, dims: { width: number; height: number } | null | undefined, scale: number, mode: string): Promise<File> {
     let w = dims?.width, h = dims?.height;
