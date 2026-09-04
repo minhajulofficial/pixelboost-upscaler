@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Upload, Download, Trash2, Loader2, Image as ImageIcon,
   Sparkles, Zap, AlertCircle, Palette, Wand2, Server,
-  Eye, ArrowLeft,
+  Eye, ArrowLeft, HardDrive,
 } from 'lucide-react';
 import Topbar from '../components/Topbar';
 import Footer from '../components/Footer';
@@ -36,6 +36,14 @@ const SERVER_MODES = [
   { id: 'anime', label: 'Anime', icon: Palette, color: 'text-indigo-500' },
 ];
 
+const LOCAL_MODES = [
+  { id: 'fast', label: 'Fast', icon: Zap, color: 'text-yellow-500' },
+  { id: 'ai', label: 'AI', icon: Wand2, color: 'text-purple-500' },
+];
+
+const ENGINE_SERVER = 'server';
+const ENGINE_LOCAL = 'local';
+
 const SCALES = [2, 3, 4, 6, 8];
 const FORMATS = [
   { id: 'png', label: 'PNG' },
@@ -52,12 +60,21 @@ export default function Upscaler({ user }: UpscalerProps) {
   const [processing, setProcessing] = useState(false);
   const [selectedServer, setSelectedServer] = useState(0);
   const [compareId, setCompareId] = useState<string | null>(null);
+  const [engine, setEngine] = useState(() => {
+    try { const v = localStorage.getItem('pixelboost_engine'); return v === ENGINE_LOCAL ? ENGINE_LOCAL : ENGINE_SERVER; } catch { return ENGINE_SERVER; }
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const MODES = SERVER_MODES;
+  const MODES = engine === ENGINE_LOCAL ? LOCAL_MODES : SERVER_MODES;
+
+  useEffect(() => { try { localStorage.setItem('pixelboost_engine', engine); } catch {} }, [engine]);
+  useEffect(() => {
+    const valid = MODES.some((m) => m.id === mode);
+    if (!valid) setMode(MODES[0].id);
+  }, [engine]);
 
   const servers = getServers();
-  const canProcess = user ? canUseCredits(user.credits_used, user.credits_limit) : false;
+  const canProcess = engine === ENGINE_LOCAL ? !!user : (user ? canUseCredits(user.credits_used, user.credits_limit) : false);
 
   useEffect(() => {
     return () => {
@@ -116,10 +133,23 @@ export default function Upscaler({ user }: UpscalerProps) {
 
     try {
       let blob: Blob;
-      const server = servers[selectedServer];
-      if (!server) throw new Error('No server available');
+      if (engine === ENGINE_LOCAL) {
+        // @ts-ignore - JS service without declaration
+        const { runLocalUpscale } = await import('../services/localUpscale.js');
+        blob = await runLocalUpscale(item.file, {
+          scale,
+          mode,
+          format,
+          quality,
+          onProgress: (pct: number) => {
+            setImages((prev) => prev.map((img) => img.id === item.id ? { ...img, progress: pct } : img));
+          },
+        });
+      } else {
+        const server = servers[selectedServer];
+        if (!server) throw new Error('No server available');
 
-      const formData = new FormData();
+        const formData = new FormData();
         formData.append('file', item.file);
         formData.append('scale', String(scale));
         formData.append('format', format === 'webp' ? 'png' : format);
@@ -186,6 +216,7 @@ export default function Upscaler({ user }: UpscalerProps) {
           );
           URL.revokeObjectURL(url);
         }
+      }
 
       const resultPreview = URL.createObjectURL(blob);
       const resultImg = new Image();
@@ -210,7 +241,7 @@ export default function Upscaler({ user }: UpscalerProps) {
         )
       );
 
-      if (user) {
+      if (user && engine === ENGINE_SERVER) {
         try {
           await useCredit(user.id);
         } catch {
@@ -343,8 +374,19 @@ export default function Upscaler({ user }: UpscalerProps) {
                 <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
                   Engine
                 </label>
-                <div className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white">
-                  <Server size={12} /> Server
+                <div className="flex rounded-lg bg-gray-800 p-1">
+                  <button
+                    onClick={() => setEngine(ENGINE_SERVER)}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${engine === ENGINE_SERVER ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    <Server size={12} /> Server
+                  </button>
+                  <button
+                    onClick={() => setEngine(ENGINE_LOCAL)}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${engine === ENGINE_LOCAL ? 'bg-green-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    <HardDrive size={12} /> Your PC
+                  </button>
                 </div>
               </div>
 
