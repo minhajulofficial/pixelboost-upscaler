@@ -137,16 +137,21 @@ export default function Upscaler({ user }: UpscalerProps) {
     let needResize = false;
     if (mode !== 'fast' && w * h > SERVER_AI_MAX_PIXELS) {
       const r = Math.sqrt(SERVER_AI_MAX_PIXELS / (w * h));
-      targetW = Math.max(64, Math.round(w * r));
-      targetH = Math.max(64, Math.round(h * r));
+      targetW = Math.max(64, Math.floor(w * r));
+      targetH = Math.max(64, Math.floor(h * r));
       needResize = true;
     }
-    const outPixels = targetW * targetH * scale * scale;
-    if (outPixels > SERVER_MAX_OUTPUT_PIXELS) {
-      const r = Math.sqrt(SERVER_MAX_OUTPUT_PIXELS / outPixels);
-      targetW = Math.max(64, Math.round(targetW * r));
-      targetH = Math.max(64, Math.round(targetH * r));
+    let outPixels = targetW * targetH * scale * scale;
+    if (outPixels >= SERVER_MAX_OUTPUT_PIXELS) {
+      const r = Math.sqrt((SERVER_MAX_OUTPUT_PIXELS - 1) / outPixels);
+      targetW = Math.max(64, Math.floor(targetW * r));
+      targetH = Math.max(64, Math.floor(targetH * r));
       needResize = true;
+      // ensure strictly under cap after rounding
+      while (targetW * targetH * scale * scale >= SERVER_MAX_OUTPUT_PIXELS && targetW > 64 && targetH > 64) {
+        targetW -= 1;
+        targetH -= 1;
+      }
     }
     if (!needResize) return file;
     const bitmap = await createImageBitmap(file);
