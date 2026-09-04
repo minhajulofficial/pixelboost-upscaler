@@ -414,20 +414,20 @@ export default function Upscaler({ user }: UpscalerProps) {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-gray-950">
+    <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-white">
       <Topbar user={user} />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-6">
           <Link
             to="/"
-            className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+            className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
           >
             <ArrowLeft size={14} />
             Back
           </Link>
-          <h1 className="mt-2 text-2xl font-bold text-white">Upscale Images</h1>
-          <p className="text-sm text-gray-400">
+          <h1 className="mt-2 text-2xl font-bold text-gray-900 dark:text-white">Upscale Images</h1>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
             Enhance your images with AI upscaling
           </p>
         </div>
@@ -437,12 +437,12 @@ export default function Upscaler({ user }: UpscalerProps) {
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
           onClick={() => fileInputRef.current?.click()}
-          className="relative mb-8 cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed border-gray-700 p-12 text-center transition-all hover:border-purple-500"
+          className="relative mb-8 cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed border-gray-300 bg-white p-12 text-center transition-all hover:border-purple-500 dark:border-gray-700 dark:bg-gray-900/30"
         >
           <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 via-transparent to-violet-500/10" />
           <div className="relative">
-            <Upload size={48} className="mx-auto mb-4 text-gray-500" />
-            <p className="mb-2 text-lg font-medium text-gray-300">
+            <Upload size={48} className="mx-auto mb-4 text-gray-400 dark:text-gray-500" />
+            <p className="mb-2 text-lg font-medium text-gray-700 dark:text-gray-300">
               Drop images here or click to upload
             </p>
             <p className="text-sm text-gray-500">JPG, PNG, WebP up to 20MB</p>
@@ -459,23 +459,23 @@ export default function Upscaler({ user }: UpscalerProps) {
 
         {/* Settings Bar */}
         {images.length > 0 && (
-          <div className="mb-8 rounded-2xl border border-gray-800 bg-gray-900/50 p-5">
+          <div className="mb-8 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900/50">
             <div className="flex flex-wrap items-center gap-5">
               {/* Engine */}
               <div>
-                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">
                   Engine
                 </label>
-                <div className="flex rounded-lg bg-gray-800 p-1">
+                <div className="flex rounded-lg bg-gray-100 p-1 dark:bg-gray-800">
                   <button
                     onClick={() => setEngine(ENGINE_SERVER)}
-                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${engine === ENGINE_SERVER ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${engine === ENGINE_SERVER ? 'bg-purple-600 text-white' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'}`}
                   >
                     <Server size={12} /> Server
                   </button>
                   <button
                     onClick={() => setEngine(ENGINE_LOCAL)}
-                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${engine === ENGINE_LOCAL ? 'bg-green-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${engine === ENGINE_LOCAL ? 'bg-green-600 text-white' : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'}`}
                   >
                     <HardDrive size={12} /> Your PC
                   </button>
@@ -483,11 +483,11 @@ export default function Upscaler({ user }: UpscalerProps) {
               </div>
 
               {/* Divider */}
-              <div className="h-8 w-px bg-gray-800" />
+              <div className="h-8 w-px bg-gray-200 dark:bg-gray-800" />
 
               {/* Mode */}
               <div>
-                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">
                   Mode
                 </label>
                 <div className="flex gap-1.5">
@@ -498,7 +498,7 @@ export default function Upscaler({ user }: UpscalerProps) {
                       className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                         mode === m.id
                           ? 'bg-purple-600 text-white'
-                          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                       }`}
                     >
                       <m.icon size={12} className={m.color} />
@@ -509,11 +509,11 @@ export default function Upscaler({ user }: UpscalerProps) {
               </div>
 
               {/* Divider */}
-              <div className="h-8 w-px bg-gray-800" />
+              <div className="h-8 w-px bg-gray-200 dark:bg-gray-800" />
 
               {/* Scale */}
               <div>
-                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">
                   Scale
                 </label>
                 <div className="flex gap-1.5">
@@ -524,7 +524,7 @@ export default function Upscaler({ user }: UpscalerProps) {
                       className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                         scale === s
                           ? 'bg-purple-600 text-white'
-                          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                       }`}
                     >
                       {s}x
@@ -534,11 +534,11 @@ export default function Upscaler({ user }: UpscalerProps) {
               </div>
 
               {/* Divider */}
-              <div className="h-8 w-px bg-gray-800" />
+              <div className="h-8 w-px bg-gray-200 dark:bg-gray-800" />
 
               {/* Format */}
               <div>
-                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">
                   Format
                 </label>
                 <div className="flex gap-1.5">
@@ -549,7 +549,7 @@ export default function Upscaler({ user }: UpscalerProps) {
                       className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                         format === f.id
                           ? 'bg-purple-600 text-white'
-                          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                       }`}
                     >
                       {f.label}
@@ -561,9 +561,9 @@ export default function Upscaler({ user }: UpscalerProps) {
               {/* Quality */}
               {(format === 'jpg' || format === 'webp') && (
                 <>
-                  <div className="h-8 w-px bg-gray-800" />
+                  <div className="h-8 w-px bg-gray-200 dark:bg-gray-800" />
                   <div className="min-w-[120px]">
-                    <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                    <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">
                       Quality {quality}%
                     </label>
                     <input
@@ -581,15 +581,15 @@ export default function Upscaler({ user }: UpscalerProps) {
               {/* Server Selector */}
               {servers.length > 1 && (
                 <>
-                  <div className="h-8 w-px bg-gray-800" />
+                  <div className="h-8 w-px bg-gray-200 dark:bg-gray-800" />
                   <div>
-                    <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                    <label className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">
                       Server
                     </label>
                     <select
                       value={selectedServer}
                       onChange={(e) => setSelectedServer(Number(e.target.value))}
-                      className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-300 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-purple-500 dark:bg-gray-800 dark:text-gray-300"
                     >
                       {servers.map((s, i) => (
                         <option key={i} value={i}>
@@ -628,7 +628,7 @@ export default function Upscaler({ user }: UpscalerProps) {
 
                 <button
                   onClick={handleClear}
-                  className="rounded-xl border border-gray-700 px-5 py-2 text-sm font-semibold text-gray-300 transition-colors hover:border-rose-500 hover:text-rose-400"
+                  className="rounded-xl border border-gray-300 bg-white px-5 py-2 text-sm font-semibold text-gray-700 transition-colors hover:border-rose-500 hover:text-rose-400 dark:border-gray-700 dark:bg-transparent dark:text-gray-300"
                 >
                   Clear
                 </button>
@@ -643,7 +643,7 @@ export default function Upscaler({ user }: UpscalerProps) {
             {images.map((item) => (
               <div
                 key={item.id}
-                className="group relative overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 transition-all duration-200 hover:border-gray-700 hover:shadow-lg hover:shadow-purple-500/5"
+                className="group relative overflow-hidden rounded-2xl border border-gray-200 bg-white transition-all duration-200 hover:border-gray-300 hover:shadow-lg hover:shadow-purple-500/5 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700"
               >
                 {/* Preview */}
                 <div className="relative aspect-square">
@@ -722,7 +722,7 @@ export default function Upscaler({ user }: UpscalerProps) {
                 {/* Info */}
                 <div className="p-3">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="truncate text-sm font-medium text-gray-300">
+                    <span className="truncate text-sm font-medium text-gray-900 dark:text-gray-300">
                       {item.file.name}
                     </span>
                     <span className="ml-2 shrink-0 text-xs text-gray-500">
@@ -732,7 +732,7 @@ export default function Upscaler({ user }: UpscalerProps) {
 
                   {/* Size display */}
                   {item.inputDims && (
-                    <p className="mb-1 text-[11px] text-gray-500">
+                    <p className="mb-1 text-[11px] text-gray-500 dark:text-gray-500">
                       {item.inputDims.width}×{item.inputDims.height}
                       {item.status === 'done' && item.resultDims
                         ? ` → ${item.resultDims.width}×${item.resultDims.height}`
@@ -772,7 +772,7 @@ export default function Upscaler({ user }: UpscalerProps) {
         {/* Empty State */}
         {images.length === 0 && (
           <div className="py-24 text-center">
-            <ImageIcon size={64} className="mx-auto mb-4 text-gray-700" />
+            <ImageIcon size={64} className="mx-auto mb-4 text-gray-300 dark:text-gray-700" />
             <p className="text-gray-500">No images uploaded yet</p>
           </div>
         )}

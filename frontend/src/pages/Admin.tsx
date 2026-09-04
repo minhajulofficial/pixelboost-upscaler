@@ -451,13 +451,13 @@ export default function Admin({ user }: { user: User | null }) {
     return (
       <div className="space-y-6">
         <div className="grid gap-4 md:grid-cols-4">
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <Users size={14} /> Total Users
             </div>
             <div className="mt-1 text-2xl font-bold text-white">{users.length}</div>
           </div>
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <Zap size={14} /> Credits Used
             </div>
@@ -465,7 +465,7 @@ export default function Admin({ user }: { user: User | null }) {
               {totalCreditsUsed.toLocaleString()}
             </div>
           </div>
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <Server size={14} /> Servers
             </div>
@@ -474,7 +474,7 @@ export default function Admin({ user }: { user: User | null }) {
             </div>
             <div className="text-xs text-gray-500">healthy</div>
           </div>
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <TrendingUp size={14} /> Revenue
             </div>
@@ -486,7 +486,7 @@ export default function Admin({ user }: { user: User | null }) {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
               <Server size={14} /> Server Health
             </h3>
@@ -526,7 +526,7 @@ export default function Admin({ user }: { user: User | null }) {
             </div>
           </div>
 
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
               <Clock size={14} /> Recent Activity
             </h3>
@@ -781,15 +781,15 @@ export default function Admin({ user }: { user: User | null }) {
     return (
       <div className="space-y-6">
         <div className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="text-xs text-gray-400">Total Revenue</div>
             <div className="mt-1 text-2xl font-bold text-white">৳{approvedRevenue.toLocaleString()}</div>
           </div>
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="text-xs text-gray-400">Pending Payments</div>
             <div className="mt-1 text-2xl font-bold text-yellow-400">{pendingPayments}</div>
           </div>
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="text-xs text-gray-400">Total Transactions</div>
             <div className="mt-1 text-2xl font-bold text-white">{payments.length}</div>
           </div>
@@ -1053,7 +1053,7 @@ export default function Admin({ user }: { user: User | null }) {
   function renderSettings() {
     return (
       <div className="space-y-6">
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">General</h3>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
@@ -1083,7 +1083,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Authentication</h3>
           <div className="flex items-center justify-between">
             <div>
@@ -1096,7 +1096,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Payment Numbers</h3>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
@@ -1110,7 +1110,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Server Scales</h3>
           <p className="mb-3 text-xs text-gray-400">Toggle which scales are available on Server engine. Your PC always has all scales.</p>
           <div className="flex flex-wrap gap-2">
@@ -1135,12 +1135,12 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Footer Text</h3>
           <textarea value={settings.footerText} onChange={(e) => setSettings((s) => ({ ...s, footerText: e.target.value }))} rows={2} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-green-500 focus:outline-none" />
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Header Links</h3>
           <div className="mb-3 flex gap-2">
             <input type="text" value={newHeaderLink.label} onChange={(e) => setNewHeaderLink((l) => ({ ...l, label: e.target.value }))} placeholder="Label" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
@@ -1158,7 +1158,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Footer Social Links</h3>
           <div className="space-y-3">
             {[
@@ -1191,7 +1191,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Topbar Icons</h3>
           <div className="space-y-3">
             {[
@@ -1250,7 +1250,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Footer — Platform Links</h3>
           <div className="mb-3 flex gap-2">
             <input type="text" value={newFooterPlatformLink.label} onChange={(e) => setNewFooterPlatformLink((l) => ({ ...l, label: e.target.value }))} placeholder="Label" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
@@ -1268,7 +1268,7 @@ export default function Admin({ user }: { user: User | null }) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <h3 className="mb-4 text-sm font-semibold text-white">Footer — Support Links</h3>
           <div className="mb-3 flex gap-2">
             <input type="text" value={newFooterSupportLink.label} onChange={(e) => setNewFooterSupportLink((l) => ({ ...l, label: e.target.value }))} placeholder="Label" className="flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
@@ -1310,14 +1310,14 @@ export default function Admin({ user }: { user: User | null }) {
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
         <div className="mb-6 flex items-center gap-3">
           <Shield className="text-green-500" size={24} />
-          <h1 className="text-xl font-bold text-white">Admin Panel</h1>
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">Admin Panel</h1>
           <span className="rounded-full bg-purple-500/20 px-3 py-1 text-xs font-semibold text-purple-300">
             {users.length} users
           </span>
         </div>
 
         <div className="mb-6 overflow-x-auto">
-          <div className="flex gap-1 rounded-xl border border-gray-800 bg-gray-900 p-1">
+          <div className="flex gap-1 rounded-xl border border-gray-200 bg-white p-1 dark:border-gray-800 dark:bg-gray-900">
             {TABS.map((tab) => {
               const Icon = tab.icon;
               return (
@@ -1327,7 +1327,7 @@ export default function Admin({ user }: { user: User | null }) {
                   className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
                     activeTab === tab.id
                       ? 'bg-green-600 text-white'
-                      : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
                   }`}
                 >
                   <Icon size={14} />
