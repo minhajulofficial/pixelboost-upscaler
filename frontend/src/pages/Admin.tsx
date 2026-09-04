@@ -46,6 +46,7 @@ type SiteSettings = {
   footerSupportLinks: { label: string; url: string }[];
   paymentNumbers: Record<string, string>;
   googleOnly: boolean;
+  disabledScales: number[];
 };
 
 const TABS = [
@@ -75,6 +76,7 @@ const DEFAULT_SETTINGS: SiteSettings = {
   footerSupportLinks: [],
   paymentNumbers: { bkash: '', nagad: '' },
   googleOnly: false,
+  disabledScales: [],
 };
 
 async function saveSiteConfig(key: string, value: unknown): Promise<void> {
@@ -1085,6 +1087,31 @@ export default function Admin({ user }: { user: User | null }) {
               <label className="mb-1 block text-xs text-gray-400">Nagad Number</label>
               <input type="text" value={settings.paymentNumbers?.nagad || ''} onChange={(e) => updatePaymentNumber('nagad', e.target.value)} placeholder="01XXXXXXXXX" className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-green-500 focus:outline-none" />
             </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <h3 className="mb-4 text-sm font-semibold text-white">Server Scales</h3>
+          <p className="mb-3 text-xs text-gray-400">Toggle which scales are available on Server engine. Your PC always has all scales.</p>
+          <div className="flex flex-wrap gap-2">
+            {[2, 3, 4, 6, 8].map((s) => {
+              const disabled = (settings.disabledScales || []).includes(s);
+              return (
+                <button
+                  key={s}
+                  onClick={() => {
+                    const cur = settings.disabledScales || [];
+                    const next = cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s];
+                    const updated = { ...settings, disabledScales: next };
+                    setSettings(updated);
+                    saveSiteConfig('site_settings', updated).catch(() => {});
+                  }}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold ${disabled ? 'bg-gray-700 text-gray-400' : 'bg-green-600 text-white'}`}
+                >
+                  {s}x {disabled ? '(off)' : ''}
+                </button>
+              );
+            })}
           </div>
         </div>
 

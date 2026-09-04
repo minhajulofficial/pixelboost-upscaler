@@ -19,14 +19,25 @@ import { hasAlpha, extractAlpha, compositeOverWhite, combineStraight } from './a
 const ORT_VERSION = '1.21.0';
 const MODEL_CACHE = 'pixelboost-models-v1';
 
-// Two verified public copies of the same export (NCHW, opset 17, official
-// realesr-general-x4v3 weights). The second is a fallback if the first host
-// is slow or unreachable.
-const MODEL_URLS = [
-  'https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/main/realesr-general-x4v3.onnx',
-  'https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx',
-];
+// Models per local mode. x4v3 is general (~5 MB), x4plus is best quality (~16 MB).
+const MODEL_CONFIGS = {
+  ai: {
+    urls: [
+      'https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/main/realesr-general-x4v3.onnx',
+      'https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx',
+    ],
+    sizeMB: 5,
+  },
+  'ai-plus': {
+    urls: [
+      'https://huggingface.co/kaicheng0101/realesrgan-x4plus-onnx/resolve/main/realesrgan-x4plus.onnx',
+      'https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesrgan-x4plus.onnx',
+    ],
+    sizeMB: 16,
+  },
+};
 
+const MODEL_URLS = MODEL_CONFIGS.ai.urls;
 const MODEL_SIZE_ESTIMATE_MB = 5;
 
 // Small tiles keep peak memory sane on phones; output tiles are 4x this.
@@ -34,7 +45,7 @@ const TILE = 256;
 const PAD = 16;
 const NATIVE = 4;
 
-let sessionPromise = null;
+let sessionPromises = {};
 let didConfigure = false;
 
 function configureOrt(ort) {
@@ -80,12 +91,14 @@ async function fetchWithProgress(url, onProgress) {
   return buf.buffer;
 }
 
-async function getModelBuffer(onProgress) {
+async function getModelBuffer(onProgress, modelKey = 'ai') {
+  const cfg = MODEL_CONFIGS[modelKey] || MODEL_CONFIGS.ai;
+  const urls = cfg.urls;
   if (!('caches' in window)) {
-    return fetchWithProgress(MODEL_URLS[0], onProgress);
+    return fetchWithProgress(urls[0], onProgress);
   }
   const cache = await caches.open(MODEL_CACHE);
-  for (const url of MODEL_URLS) {
+  for (const url of urls) {
     const hit = await cache.match(url);
     if (hit && hit.ok) {
       const blob = await hit.blob();
@@ -93,9 +106,9 @@ async function getModelBuffer(onProgress) {
       return await blob.arrayBuffer();
     }
   }
-  const buffer = await fetchWithProgress(MODEL_URLS[0], onProgress);
+  const buffer = await fetchWithProgress(urls[0], onProgress);
   try {
-    await cache.put(MODEL_URLS[0], new Response(new Blob([buffer])));
+    await cache.put(urls[0], new Response(new Blob([buffer])));
   } catch {
     // caching is best-effort
   }
@@ -123,15 +136,17 @@ function canvasToBlob(canvas, type, quality) {
   });
 }
 
-/** Lazily build (and reuse) the ORT session. Returns { session, inputName, outputName }. */
-function ensureSession(onProgress, onStage) {
-  if (!sessionPromise) {
-    sessionPromise = (async () => {
+/** Lazily build (and reuse) the ORT session per model. Returns { session, inputName, outputName }. */
+function ensureSession(onProgress, onStage, modelKey = 'ai') {
+  const key = modelKey || 'ai';
+  if (!sessionPromises[key]) {
+    sessionPromises[key] = (async () => {
       const ortModule = await import('onnxruntime-web');
       const ort = ortModule.default || ortModule;
       configureOrt(ort);
-      onStage('Downloading AI model (~5 MB, one time)…');
-      const buffer = await getModelBuffer(onProgress);
+      const cfg = MODEL_CONFIGS[key] || MODEL_CONFIGS.ai;
+      onStage(`Downloading AI model (~${cfg.sizeMB} MB, one time)…`);
+      const buffer = await getModelBuffer(onProgress, key);
       onStage('Running inference…');
       const providers = canUseWebGpu()
         ? ['webgpu', 'wasm']
@@ -145,9 +160,9 @@ function ensureSession(onProgress, onStage) {
       return { session, inputName, outputName, ort };
     })();
     // reset so a failed download can be retried
-    sessionPromise.catch(() => { sessionPromise = null; });
+    sessionPromises[key].catch(() => { sessionPromises[key] = null; });
   }
-  return sessionPromise;
+  return sessionPromises[key];
 }
 
 async function inferTiled(session, ort, im, inputName, outputName, onTileDone) {
@@ -237,7 +252,7 @@ async function inferTiled(session, ort, im, inputName, outputName, onTileDone) {
  * Local upscale.
  *
  * @param {Blob} blob input image file
- * @param {{ mode: 'fast'|'ai', scale: number, quality: number,
+ * @param {{ mode: 'fast'|'ai'|'ai-plus', scale: number, quality: number,
  *           format: {id:'png'|'jpg'|'webp', mime:string},
  *           onProgress:(pct:number, stage:string)=>void }} opts
  * @returns {Promise<Blob>} upscaled blob
@@ -254,10 +269,13 @@ export async function runLocalUpscale(blob, { mode, scale, quality, format, onPr
   let aiInput = null;
   let aiAlpha = null;
 
-  if (mode === 'ai') {
+  const isAiMode = mode === 'ai' || mode === 'ai-plus';
+  if (isAiMode) {
+    const modelKey = mode === 'ai-plus' ? 'ai-plus' : 'ai';
     const { session, inputName, outputName, ort } = await ensureSession(
       (p) => onProgress(p * 0.9, 'Downloading AI model…'),
       () => {},
+      modelKey,
     );
     onProgress(1, 'Preparing image…');
     await yieldToUi();
@@ -325,11 +343,12 @@ export async function runLocalUpscale(blob, { mode, scale, quality, format, onPr
 }
 
 /** True when we have already downloaded/cached the model. */
-export async function isModelCached() {
+export async function isModelCached(modelKey = 'ai') {
   try {
     if (!('caches' in window)) return false;
     const cache = await caches.open(MODEL_CACHE);
-    for (const url of MODEL_URLS) {
+    const cfg = MODEL_CONFIGS[modelKey] || MODEL_CONFIGS.ai;
+    for (const url of cfg.urls) {
       if (await cache.match(url)) return true;
     }
     return false;
@@ -338,6 +357,7 @@ export async function isModelCached() {
   }
 }
 
-export function modelSizeEstimateMB() {
-  return MODEL_SIZE_ESTIMATE_MB;
+export function modelSizeEstimateMB(modelKey = 'ai') {
+  const cfg = MODEL_CONFIGS[modelKey] || MODEL_CONFIGS.ai;
+  return cfg.sizeMB;
 }

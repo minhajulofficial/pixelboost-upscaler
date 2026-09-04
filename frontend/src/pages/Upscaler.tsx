@@ -39,6 +39,7 @@ const SERVER_MODES = [
 const LOCAL_MODES = [
   { id: 'fast', label: 'Fast', icon: Zap, color: 'text-yellow-500' },
   { id: 'ai', label: 'AI', icon: Wand2, color: 'text-purple-500' },
+  { id: 'ai-plus', label: 'AI Plus', icon: Sparkles, color: 'text-pink-500' },
 ];
 
 const ENGINE_SERVER = 'server';
@@ -63,15 +64,33 @@ export default function Upscaler({ user }: UpscalerProps) {
   const [engine, setEngine] = useState(() => {
     try { const v = localStorage.getItem('pixelboost_engine'); return v === ENGINE_LOCAL ? ENGINE_LOCAL : ENGINE_SERVER; } catch { return ENGINE_SERVER; }
   });
+  const [disabledScales, setDisabledScales] = useState<number[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const MODES = engine === ENGINE_LOCAL ? LOCAL_MODES : SERVER_MODES;
+  const visibleScales = engine === ENGINE_SERVER ? SCALES.filter((s) => !disabledScales.includes(s)) : SCALES;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { supabase } = await import('../lib/supabase');
+        const { data } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
+        if (data?.value && typeof data.value === 'object') {
+          const ds = (data.value as Record<string, unknown>).disabledScales;
+          if (Array.isArray(ds)) setDisabledScales(ds as number[]);
+        }
+      } catch {}
+    })();
+  }, []);
 
   useEffect(() => { try { localStorage.setItem('pixelboost_engine', engine); } catch {} }, [engine]);
   useEffect(() => {
     const valid = MODES.some((m) => m.id === mode);
     if (!valid) setMode(MODES[0].id);
   }, [engine]);
+  useEffect(() => {
+    if (!visibleScales.includes(scale) && visibleScales.length > 0) setScale(visibleScales[0]);
+  }, [visibleScales.join(',')]);
 
   const servers = getServers();
   const canProcess = engine === ENGINE_LOCAL ? !!user : (user ? canUseCredits(user.credits_used, user.credits_limit) : false);
@@ -425,7 +444,7 @@ export default function Upscaler({ user }: UpscalerProps) {
                   Scale
                 </label>
                 <div className="flex gap-1.5">
-                  {SCALES.map((s) => (
+                  {visibleScales.map((s) => (
                     <button
                       key={s}
                       onClick={() => setScale(s)}
