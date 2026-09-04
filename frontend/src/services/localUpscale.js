@@ -184,7 +184,7 @@ function ensureSession(onProgress, onStage, modelKey = 'ai') {
 async function inferTiled(session, ort, im, inputName, outputName, onTileDone) {
   const { data, width: w, height: h } = im;
 
-  // Native 4x output buffer.
+  // Native 4x output buffer - interleaved RGB.
   const outW = w * NATIVE;
   const outH = h * NATIVE;
   const outF = new Float32Array(outW * outH * 3);
@@ -208,40 +208,41 @@ async function inferTiled(session, ort, im, inputName, outputName, onTileDone) {
       const ph = py1 - py0;
       const pw = px1 - px0;
 
-      // Build padded [1,3,ph,pw] input directly from the RGBA source.
+      // Build padded [1,3,ph,pw] in NCHW planar layout.
       const patch = new Float32Array(1 * 3 * ph * pw);
+      const plane = ph * pw;
       for (let y = py0; y < py1; y++) {
-        const srcRow = y * w * 4 + px0 * 4;
-        const dstRow = (y - py0) * pw * 3;
         for (let x = px0; x < px1; x++) {
-          const s = srcRow + (x - px0) * 4;
-          const d = dstRow + (x - px0) * 3;
-          patch[d] = data[s] / 255;
-          patch[d + 1] = data[s + 1] / 255;
-          patch[d + 2] = data[s + 2] / 255;
+          const s = (y * w + x) * 4;
+          const d = (y - py0) * pw + (x - px0);
+          patch[0 * plane + d] = data[s] / 255;
+          patch[1 * plane + d] = data[s + 1] / 255;
+          patch[2 * plane + d] = data[s + 2] / 255;
         }
       }
 
       const tensor = new ort.Tensor('float32', patch, [1, 3, ph, pw]);
       const feeds = { [inputName]: tensor };
       const out = await session.run(feeds);
-      const result = out[outputName].data; // Float32Array, [1,3,ph*4,pw*4]
+      const result = out[outputName].data; // Float32Array, [1,3,ph*4,pw*4] planar NCHW
 
       const cropTop = (y0 - py0) * NATIVE;
       const cropLeft = (x0 - px0) * NATIVE;
       const cropH = (y1 - y0) * NATIVE;
       const cropW = (x1 - x0) * NATIVE;
-      const ow = ph * NATIVE;
+      const ow = pw * NATIVE;
+      const oh = ph * NATIVE;
+      const outPlane = oh * ow;
 
       for (let y = 0; y < cropH; y++) {
-        const sRow = ((cropTop + y) * ow + cropLeft) * 3;
-        const dRow = ((y0 * NATIVE + y) * outW + x0 * NATIVE) * 3;
         for (let x = 0; x < cropW; x++) {
-          const s = sRow + x * 3;
-          const d = dRow + x * 3;
-          outF[d] = result[s];
-          outF[d + 1] = result[s + 1];
-          outF[d + 2] = result[s + 2];
+          const sR = 0 * outPlane + (cropTop + y) * ow + (cropLeft + x);
+          const sG = 1 * outPlane + (cropTop + y) * ow + (cropLeft + x);
+          const sB = 2 * outPlane + (cropTop + y) * ow + (cropLeft + x);
+          const d = ((y0 * NATIVE + y) * outW + (x0 * NATIVE + x)) * 3;
+          outF[d] = result[sR];
+          outF[d + 1] = result[sG];
+          outF[d + 2] = result[sB];
         }
       }
 
