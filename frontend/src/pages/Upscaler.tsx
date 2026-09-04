@@ -76,12 +76,12 @@ export default function Upscaler({ user }: UpscalerProps) {
     (async () => {
       try {
         const { supabase } = await import('../lib/supabase');
-        const { data: ds } = await supabase.from('site_config').select('value').eq('key', 'site_settings').single();
+        const { data: ds } = await supabase.from('site_config').select('value').eq('key', 'site_settings').maybeSingle();
         if (ds?.value && typeof ds.value === 'object') {
           const d = (ds.value as Record<string, unknown>).disabledScales;
           if (Array.isArray(d)) setDisabledScales(d as number[]);
         }
-        const { data: md } = await supabase.from('site_config').select('value').eq('key', 'models').single();
+        const { data: md } = await supabase.from('site_config').select('value').eq('key', 'models').maybeSingle();
         if (md?.value && Array.isArray(md.value)) {
           const disabled = (md.value as Array<{ id: string; enabled: boolean }>).filter((m) => m.enabled === false).map((m) => m.id);
           setDisabledModels(disabled);

@@ -29,11 +29,13 @@ const MODEL_CONFIGS = {
     sizeMB: 5,
   },
   'ai-plus': {
+    // x4plus ONNX is gated (401) on many HF repos — use x4v3 fallback for 100% working local.
+    // TODO: replace with verified public x4plus ONNX when available.
     urls: [
-      'https://huggingface.co/kaicheng0101/realesrgan-x4plus-onnx/resolve/main/realesrgan-x4plus.onnx',
-      'https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesrgan-x4plus.onnx',
+      'https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/main/realesr-general-x4v3.onnx',
+      'https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx',
     ],
-    sizeMB: 16,
+    sizeMB: 5,
   },
 };
 
@@ -51,13 +53,14 @@ let didConfigure = false;
 function configureOrt(ort) {
   if (didConfigure) return;
   didConfigure = true;
-  // Serve the WASM binaries from the CDN matching the installed package so
-  // Webpack never has to guess/hash them.
-  ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+  // Let Vite handle wasm assets (dist/assets/*.wasm) — don't force CDN path which mismatches bundled JSEP wasm.
+  // ort.env.wasm.wasmPaths intentionally not set; ORT will fetch from same origin.
   ort.env.wasm.numThreads =
     typeof window !== 'undefined' && typeof window.crossOriginIsolated === 'boolean' && window.crossOriginIsolated
       ? Math.min(4, navigator.hardwareConcurrency || 2)
       : 1; // without COOP/COEP, SharedArrayBuffer is unavailable
+  // Prefer WASM only by default; WebGPU is tried only if available and will fallback gracefully.
+  ort.env.wasm.simd = true;
 }
 
 /** True when WebGPU is likely usable (Chrome/Edge/Opera, secure context). */
@@ -148,13 +151,26 @@ function ensureSession(onProgress, onStage, modelKey = 'ai') {
       onStage(`Downloading AI model (~${cfg.sizeMB} MB, one time)…`);
       const buffer = await getModelBuffer(onProgress, key);
       onStage('Running inference…');
-      const providers = canUseWebGpu()
-        ? ['webgpu', 'wasm']
-        : ['wasm'];
-      const session = await ort.InferenceSession.create(buffer, {
-        executionProviders: providers,
-        graphOptimizationLevel: 'all',
-      });
+      let providers = canUseWebGpu() ? ['webgpu', 'wasm'] : ['wasm'];
+      let session;
+      try {
+        session = await ort.InferenceSession.create(buffer, {
+          executionProviders: providers,
+          graphOptimizationLevel: 'all',
+        });
+      } catch (err) {
+        const msg = String(err?.message || err);
+        if (providers.includes('webgpu') && (msg.includes('webgpu') || msg.includes('GPU adapter') || msg.includes('_OrtGetInputOutputMetadata'))) {
+          // WebGPU not available or wasm mismatch — retry with WASM only
+          providers = ['wasm'];
+          session = await ort.InferenceSession.create(buffer, {
+            executionProviders: providers,
+            graphOptimizationLevel: 'all',
+          });
+        } else {
+          throw err;
+        }
+      }
       const inputName = session.inputNames[0];
       const outputName = session.outputNames[0];
       return { session, inputName, outputName, ort };
