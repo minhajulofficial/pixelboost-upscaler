@@ -166,7 +166,7 @@ create or replace function get_user_emails(uids uuid[])
 returns table(id uuid, email text) as $$
 begin
   return query
-  select au.id, au.email
+  select au.id, au.email::text
   from auth.users au
   where au.id = any(uids);
 end;
@@ -179,7 +179,7 @@ create or replace function get_admin_users()
 returns table(user_id uuid, tier text, credits_limit integer, credits_used integer, created_at timestamptz, email text) as $$
 begin
   return query
-  select uc.user_id, uc.tier, uc.credits_limit, uc.credits_used, uc.created_at, au.email
+  select uc.user_id, uc.tier, uc.credits_limit, uc.credits_used, uc.created_at, au.email::text
   from user_credits uc
   left join auth.users au on au.id = uc.user_id
   order by uc.created_at desc
