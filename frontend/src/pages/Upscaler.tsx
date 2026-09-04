@@ -95,6 +95,53 @@ export default function Upscaler({ user }: UpscalerProps) {
   const servers = getServers();
   const canProcess = engine === ENGINE_LOCAL ? !!user : (user ? canUseCredits(user.credits_used, user.credits_limit) : false);
 
+  const SERVER_AI_MAX_PIXELS = 4000000;
+  const SERVER_MAX_OUTPUT_PIXELS = 40000000;
+
+  async function getServerSafeBlob(file: File, dims: { width: number; height: number } | null | undefined, scale: number, mode: string): Promise<File> {
+    let w = dims?.width, h = dims?.height;
+    if (!w || !h) {
+      try {
+        const url = URL.createObjectURL(file);
+        const d = await new Promise<{ width: number; height: number }>((res) => {
+          const im = new Image();
+          im.onload = () => res({ width: im.naturalWidth, height: im.naturalHeight });
+          im.onerror = () => res({ width: 0, height: 0 });
+          im.src = url;
+        });
+        URL.revokeObjectURL(url);
+        w = d.width; h = d.height;
+        if (!w || !h) return file;
+      } catch { return file; }
+    }
+    let targetW = w, targetH = h;
+    let needResize = false;
+    if (mode !== 'fast' && w * h > SERVER_AI_MAX_PIXELS) {
+      const r = Math.sqrt(SERVER_AI_MAX_PIXELS / (w * h));
+      targetW = Math.max(64, Math.round(w * r));
+      targetH = Math.max(64, Math.round(h * r));
+      needResize = true;
+    }
+    const outPixels = targetW * targetH * scale * scale;
+    if (outPixels > SERVER_MAX_OUTPUT_PIXELS) {
+      const r = Math.sqrt(SERVER_MAX_OUTPUT_PIXELS / outPixels);
+      targetW = Math.max(64, Math.round(targetW * r));
+      targetH = Math.max(64, Math.round(targetH * r));
+      needResize = true;
+    }
+    if (!needResize) return file;
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW; canvas.height = targetH;
+    const ctx = canvas.getContext('2d')!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, 0, 0, w, h, 0, 0, targetW, targetH);
+    bitmap.close?.();
+    const blob = await new Promise<Blob>((res, rej) => canvas.toBlob((b) => b ? res(b) : rej(new Error('resize failed')), file.type || 'image/png', 0.92));
+    return new File([blob], file.name, { type: blob.type });
+  }
+
   useEffect(() => {
     return () => {
       images.forEach((img) => {
@@ -168,8 +215,10 @@ export default function Upscaler({ user }: UpscalerProps) {
         const server = servers[selectedServer];
         if (!server) throw new Error('No server available');
 
+        const safeFile = await getServerSafeBlob(item.file, item.inputDims, scale, mode);
+
         const formData = new FormData();
-        formData.append('file', item.file);
+        formData.append('file', safeFile);
         formData.append('scale', String(scale));
         formData.append('format', format === 'webp' ? 'png' : format);
         formData.append('quality', String(quality));
